@@ -1,0 +1,174 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <BaseIntermediateOutputPath>obj\ConfigManager\</BaseIntermediateOutputPath>
+    <MSBuildProjectExtensionsPath>$(BaseIntermediateOutputPath)</MSBuildProjectExtensionsPath>
+  </PropertyGroup>
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{0BAC4D10-1D45-4B13-861C-48BAE48536E9}</ProjectGuid>
+    <OutputType>Library</OutputType>
+    <RootNamespace>ConfigurationManager</RootNamespace>
+    <AssemblyName>ConfigManager</AssemblyName>
+    <Authors>sighsorry</Authors>
+    <Company>sighsorry</Company>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <DebugSymbols>false</DebugSymbols>
+    <DebugType>none</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <PropertyGroup>
+    <LangVersion>8</LangVersion>
+    <EnableReleasePackaging Condition="'$(EnableReleasePackaging)' == ''">true</EnableReleasePackaging>
+    <BuildNexusPackage Condition="'$(BuildNexusPackage)' == ''">true</BuildNexusPackage>
+    <NexusPackageArgument Condition="'$(BuildNexusPackage)' == 'true'">-CreateNexusPackage</NexusPackageArgument>
+  </PropertyGroup>
+  <PropertyGroup>
+    <ValheimGamePath Condition="'$(ValheimGamePath)' == '' And Exists('C:\Program Files (x86)\Steam\steamapps\common\Valheim')">C:\Program Files (x86)\Steam\steamapps\common\Valheim</ValheimGamePath>
+    <ValheimGamePath Condition="'$(ValheimGamePath)' == '' And Exists('C:\Program Files\Steam\steamapps\common\Valheim')">C:\Program Files\Steam\steamapps\common\Valheim</ValheimGamePath>
+    <BepInExPath Condition="'$(BepInExPath)' == ''">$(ValheimGamePath)\BepInEx</BepInExPath>
+    <ManagedAssembliesPath Condition="'$(ManagedAssembliesPath)' == ''">$(ValheimGamePath)\valheim_Data\Managed</ManagedAssembliesPath>
+    <PublicizedAssembliesPath Condition="'$(PublicizedAssembliesPath)' == ''">$(ManagedAssembliesPath)\publicized_assemblies</PublicizedAssembliesPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="ConfigurationManagerAttributes.cs" />
+    <Compile Include="ConfigOptions.cs" />
+    <Compile Include="ConfigFilesEditor.cs" />
+    <Compile Include="ConfigSettingEntry.cs" />
+    <Compile Include="HiddenSettingsParser.cs" />
+    <Compile Include="SettingEditWindow.cs" />
+    <Compile Include="LegacySettingEntry.cs" />
+    <Compile Include="PropertySettingEntry.cs" />
+    <Compile Include="SettingEntryBase.cs" />
+    <Compile Include="SettingFieldDrawer.cs" />
+    <Compile Include="SettingSearcher.cs" />
+    <Compile Include="ConfigurationManagerStyles.cs" />
+    <Compile Include="SettingsWindow.cs" />
+    <Compile Include="ComboBox.cs" />
+    <Compile Include="GUIFocus.cs" />
+    <Compile Include="GUIHelper.cs" />
+    <Compile Include="GUIScale.cs" />
+    <Compile Include="HSLColor.cs" />
+    <Compile Include="Utilities.cs" />
+    <Compile Include="ConfigurationManager.cs" />
+    <Compile Include="UiText.cs" />
+    <Compile Include="AssemblyInfo.cs" />
+    <Compile Include="ValheimConfigurationManager.cs" />
+    <Compile Include="ValueChangedEventArgs.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="0Harmony">
+      <HintPath>$(BepInExPath)\core\0Harmony.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="assembly_guiutils">
+      <HintPath>$(PublicizedAssembliesPath)\assembly_guiutils_publicized.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="assembly_utils">
+      <HintPath>$(PublicizedAssembliesPath)\assembly_utils_publicized.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="assembly_valheim">
+      <HintPath>$(PublicizedAssembliesPath)\assembly_valheim_publicized.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="BepInEx">
+      <HintPath>$(BepInExPath)\core\BepInEx.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="netstandard">
+      <HintPath>$(ManagedAssembliesPath)\netstandard.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="mscorlib">
+      <HintPath>$(ManagedAssembliesPath)\mscorlib.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="System">
+      <HintPath>$(ManagedAssembliesPath)\System.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="Unity.InputSystem">
+      <HintPath>$(ManagedAssembliesPath)\Unity.InputSystem.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="Unity.TextMeshPro">
+      <HintPath>$(ManagedAssembliesPath)\Unity.TextMeshPro.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine">
+      <HintPath>$(ManagedAssembliesPath)\UnityEngine.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(ManagedAssembliesPath)\UnityEngine.CoreModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.IMGUIModule">
+      <HintPath>$(ManagedAssembliesPath)\UnityEngine.IMGUIModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.InputLegacyModule">
+      <HintPath>$(ManagedAssembliesPath)\UnityEngine.InputLegacyModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.JSONSerializeModule">
+      <HintPath>$(ManagedAssembliesPath)\UnityEngine.JSONSerializeModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.TextRenderingModule">
+      <HintPath>$(ManagedAssembliesPath)\UnityEngine.TextRenderingModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UI">
+      <HintPath>$(ManagedAssembliesPath)\UnityEngine.UI.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include=".editorconfig" />
+    <None Include="PackageRelease.ps1" />
+    <None Include="README.md" />
+    <None Include="Thunderstore\CHANGELOG.md" />
+    <None Include="Thunderstore\icon.png" />
+    <None Include="Thunderstore\manifest.json" />
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <Target Name="ValidateBuildEnvironment" BeforeTargets="ResolveReferences">
+    <Error Condition="'$(ValheimGamePath)' == '' Or !Exists('$(ValheimGamePath)')" Text="Valheim installation was not found. Pass /p:ValheimGamePath=&quot;path-to-Valheim&quot;." />
+    <Error Condition="!Exists('$(BepInExPath)\core\BepInEx.dll')" Text="BepInEx.dll was not found under $(BepInExPath)\core." />
+    <Error Condition="!Exists('$(PublicizedAssembliesPath)\assembly_valheim_publicized.dll')" Text="Publicized Valheim assemblies were not found under $(PublicizedAssembliesPath)." />
+    <Error Condition="!Exists('$(ManagedAssembliesPath)\UnityEngine.CoreModule.dll')" Text="Unity managed assemblies were not found under $(ManagedAssembliesPath)." />
+  </Target>
+  <Target Name="PackageRelease"
+          AfterTargets="Build"
+          Condition="'$(Configuration)' == 'Release' And '$(DesignTimeBuild)' != 'true' And '$(EnableReleasePackaging)' == 'true'">
+    <Error Condition="!Exists('$(TargetPath)')" Text="Release DLL was not found: $(TargetPath)" />
+    <Exec Command="powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\PackageRelease.ps1&quot; -ProjectRoot &quot;$(MSBuildProjectDirectory)&quot; -AssemblyPath &quot;$(TargetPath)&quot; $(NexusPackageArgument)" />
+  </Target>
+  <PropertyGroup>
+    <PostBuildEvent>
+    </PostBuildEvent>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,9 @@
+{
+  "name": "ConfigManager",
+  "version_number": "1.0.0",
+  "website_url": "https://github.com/sighsorry1029/ConfigManager",
+  "description": "Fork of ConfigurationManager",
+  "dependencies": [
+    "denikson-BepInExPack_Valheim-5.4.2333"
+  ]
+}
