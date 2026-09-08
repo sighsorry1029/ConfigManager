@@ -69,6 +69,8 @@ namespace ConfigurationManager
                 if (detected.Count > 0)
                     results = results.Concat(detected);
             }
+
+            results = results.Concat(ExternalSettingsRegistry.Snapshot());
         }
 
         /// <summary>

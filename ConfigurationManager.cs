@@ -22,7 +22,7 @@ namespace ConfigurationManager
     {
         public const string GUID = "sighsorry.ConfigManager";
         public const string pluginName = "ConfigManager";
-        public const string ModVersion = "1.0.0";
+        public const string ModVersion = "1.0.1";
         public const string Version = ModVersion;
 
         internal static ConfigurationManager instance;
@@ -50,6 +50,7 @@ namespace ConfigurationManager
         private string _modsWithoutSettings;
 
         private List<SettingEntryBase> _allSettings;
+        private long _externalSettingsRevision = -1;
         private List<PluginSettingsData> _filteredSetings = new List<PluginSettingsData>();
 
         public Rect DefaultWindowRect { get; private set; }
@@ -251,7 +252,14 @@ namespace ConfigurationManager
 
         void OnDestroy()
         {
+            RemoveOwnedMenuButtons();
             _configFilesEditor?.Dispose();
+            _configSettingWindow?.Dispose();
+            _configSettingWindow = null;
+            _allSettings = null;
+            _filteredSetings.Clear();
+            SettingFieldDrawer.Release();
+            _fieldDrawer = null;
             instance = null;
         }
 
@@ -280,6 +288,9 @@ namespace ConfigurationManager
 
         void Update()
         {
+            if (DisplayingWindow && _externalSettingsRevision != ExternalSettingsRegistry.Revision)
+                BuildSettingList();
+
             if (DisplayingWindow)
                 SetUnlockCursor(0, true);
 
@@ -294,6 +305,8 @@ namespace ConfigurationManager
             else if (DisplayingWindow && (UnityInput.Current.GetKeyDown(KeyCode.Escape) || _keybind.Value.IsDown()))
                 if (_configSettingWindow.IsOpen)
                     _configSettingWindow.IsOpen = false;
+                else if (UnityInput.Current.GetKeyDown(KeyCode.Escape) && SettingFieldDrawer.CancelExternalNumericEdit())
+                    return;
                 else
                     DisplayingWindow = false;
         }
@@ -377,6 +390,17 @@ namespace ConfigurationManager
                 LogInfo("Tried to add a setting drawer for type " + settingType.FullName + " while one already exists.");
             else
                 SettingFieldDrawer.SettingDrawHandlers[settingType] = onGuiDrawer;
+        }
+
+        /// <summary>
+        /// Register settings owned outside BaseUnityPlugin.Config. The same GUID replaces
+        /// its previous registration; disposing an older handle cannot remove its replacement.
+        /// Values and persistence stay with the supplied callbacks. Dispose when the owner stops.
+        /// </summary>
+        public static IDisposable RegisterExternalSettings(string guid, string name, string version,
+            IEnumerable<ExternalSetting> settings)
+        {
+            return ExternalSettingsRegistry.Register(guid, name, version, settings);
         }
 
         private sealed class PluginSettingsData

@@ -151,8 +151,6 @@ namespace ConfigurationManager
 
         private static readonly PropertyInfo[] MyProperties = typeof(SettingEntryBase).GetProperties(BindingFlags.Instance | BindingFlags.Public);
 
-        private static readonly FieldInfo[] MyFields = typeof(SettingEntryBase).GetFields(BindingFlags.Instance | BindingFlags.Public);
-
         internal string SettingID => PluginInfo == null ? "" : $"{PluginInfo.GUID}-{Category}-{DispName}";
 
         internal void SetFromAttributes(object[] attribs, BaseUnityPlugin pluginInstance)
@@ -221,35 +219,7 @@ namespace ConfigurationManager
                                 }
                             }
 
-                            foreach (var propertyPair in MyFields.Join(otherProperties, my => my.Name, other => other.Name, (my, other) => new { my, other }))
-                            {
-                                try
-                                {
-                                    var val = propertyPair.other.GetValue(attrib);
-                                    if (val != null)
-                                        propertyPair.my.SetValue(this, val);
-                                }
-                                catch (Exception ex)
-                                {
-                                    ConfigurationManager.LogInfo($"Failed to copy value {propertyPair.my.Name} from provided tag object {attrType.FullName} - " + ex.Message);
-                                }
-                            }
-
                             var otherFields = attrType.GetFields(BindingFlags.Instance | BindingFlags.Public);
-                            foreach (var fieldPair in MyFields.Join(otherFields, my => my.Name, other => other.Name, (my, other) => new { my, other }))
-                            {
-                                try
-                                {
-                                    var val = fieldPair.other.GetValue(attrib);
-                                    if (val != null)
-                                        fieldPair.my.SetValue(this, val);
-                                }
-                                catch (Exception ex)
-                                {
-                                    ConfigurationManager.LogInfo($"Failed to copy value {fieldPair.my.Name} from provided tag object {attrType.FullName} - " + ex.Message);
-                                }
-                            }
-
                             foreach (var fieldPair in MyProperties.Join(otherFields, my => my.Name, other => other.Name, (my, other) => new { my, other }))
                             {
                                 try

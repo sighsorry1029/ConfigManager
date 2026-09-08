@@ -36,6 +36,7 @@ namespace ConfigurationManager
         private static DirectoryInfo configDirectory;
         private readonly List<FileSystemWatcher> hiddenSettingsWatchers = new List<FileSystemWatcher>();
         private Coroutine hiddenSettingsReloadCoroutine;
+        private readonly List<Button> _ownedMenuButtons = new List<Button>();
 
         void OnEnable()
         {
@@ -53,10 +54,22 @@ namespace ConfigurationManager
 
             _configFilesEditor?.SetWatching(true);
             SetupHiddenSettingsWatcher();
+            SetupMenuButton();
         }
 
         void OnDisable()
         {
+            // Notify the menu and restore the cursor while our event handler is attached.
+            try
+            {
+                DisplayingWindow = false;
+            }
+            catch (Exception ex)
+            {
+                LogWarning($"Could not close ConfigManager during disable: {ex.Message}");
+            }
+
+            RemoveOwnedMenuButtons();
             if (hiddenSettingsReloadCoroutine != null)
             {
                 StopCoroutine(hiddenSettingsReloadCoroutine);
@@ -225,6 +238,10 @@ namespace ConfigurationManager
 
         private void SetupMenuButton()
         {
+            if (!isActiveAndEnabled)
+                return;
+
+            _ownedMenuButtons.RemoveAll(button => !button);
             if (FejdStartup.instance && FejdStartup.instance.m_menuList)
             {
                 SetupMainMenuButton(FejdStartup.instance.m_menuList.transform.Find("MenuEntries"));
@@ -260,10 +277,8 @@ namespace ConfigurationManager
 
                 if (button.onClick.GetPersistentEventCount() > 0)
                     button.onClick.SetPersistentListenerState(0, UnityEngine.Events.UnityEventCallState.Off);
-                button.onClick.AddListener(delegate
-                {
-                    ToggleWindow();
-                });
+                button.onClick.AddListener(ToggleWindow);
+                _ownedMenuButtons.Add(button);
 
                 var navigation = button.navigation;
                 navigation.selectOnUp = settings.GetComponent<Button>();
@@ -300,6 +315,48 @@ namespace ConfigurationManager
             previousButton.navigation = previousNavigation;
             if (nextButton)
                 nextButton.navigation = nextNavigation;
+        }
+
+        private void RemoveOwnedMenuButtons()
+        {
+            foreach (Button button in _ownedMenuButtons)
+            {
+                if (!button)
+                    continue;
+
+                button.onClick.RemoveListener(ToggleWindow);
+                Navigation ownNavigation = button.navigation;
+                Selectable previous = ownNavigation.selectOnUp;
+                Selectable next = ownNavigation.selectOnDown;
+                if (previous)
+                {
+                    Navigation navigation = previous.navigation;
+                    if (navigation.selectOnDown == button)
+                    {
+                        navigation.selectOnDown = next;
+                        previous.navigation = navigation;
+                    }
+                }
+                if (next)
+                {
+                    Navigation navigation = next.navigation;
+                    if (navigation.selectOnUp == button)
+                    {
+                        navigation.selectOnUp = previous;
+                        next.navigation = navigation;
+                    }
+                }
+
+                button.gameObject.SetActive(false);
+                // Destroy is deferred; exclude this clone from Find on same-frame enable.
+                button.gameObject.name = menuButtonName + " (removing)";
+                Destroy(button.gameObject);
+            }
+            _ownedMenuButtons.Clear();
+
+            if (FejdStartup.instance && FejdStartup.instance.m_menuList)
+                fejdStartupMenuButtonsField?.SetValue(FejdStartup.instance,
+                    FejdStartup.instance.m_menuList.GetComponentsInChildren<Button>());
         }
 
         public float GetScreenSizeFactor()

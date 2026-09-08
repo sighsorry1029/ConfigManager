@@ -58,7 +58,7 @@ namespace ConfigurationManager
                 var originalMatrix = GUI.matrix;
                 GUI.matrix = guiMatrix;
 
-                GUI.Box(currentWindowRect, GUIContent.none, new GUIStyle());
+                GUI.Box(currentWindowRect, GUIContent.none, GUIStyle.none);
                 var color = GUI.backgroundColor;
                 GUI.backgroundColor = Palette.WindowBackground;
 
@@ -126,6 +126,7 @@ namespace ConfigurationManager
 
         private void SettingsWindow(int id)
         {
+            SettingFieldDrawer.BeginExternalNumericGUI();
             var headerRect = new Rect(0, 0, currentWindowRect.width, HeaderSize);
             HandleHeaderDblClick(headerRect);
 
@@ -149,6 +150,7 @@ namespace ConfigurationManager
 
             if (sizeChanged)
                 SaveCurrentSizeAndPosition();
+            SettingFieldDrawer.EndExternalNumericGUI();
         }
 
         private void DrawSplitView()
@@ -441,14 +443,24 @@ namespace ConfigurationManager
             var guiEnabled = GUI.enabled;
 
             if (setting.ReadOnly == true)
+            {
                 GUI.contentColor = Palette.ReadOnlyText;
+                if (setting is ExternalSettingEntry) GUI.enabled = false;
+            }
 
             GUILayout.BeginHorizontal(GUILayout.MaxWidth(SettingsListColumnWidth));
 
             try
             {
                 DrawSettingName(setting);
-                _fieldDrawer.DrawSettingValue(setting);
+                if (setting is ExternalSettingEntry external && external.UsesTextEditor && !external.UsesInlineNumericEditor)
+                {
+                    GUILayout.Label(new GUIContent(external.GetPreviewText(), external.ReadOnly == true
+                            ? external.Description : "Use Edit to change and apply this value."),
+                        GetLabelStyle(), GUILayout.ExpandWidth(true));
+                }
+                else
+                    _fieldDrawer.DrawSettingValue(setting);
                 DrawDefaultButton(setting);
             }
             catch (FormatException)
@@ -462,6 +474,9 @@ namespace ConfigurationManager
             }
 
             GUILayout.EndHorizontal();
+
+            if (setting is ExternalSettingEntry externalSetting && !string.IsNullOrEmpty(externalSetting.ErrorText))
+                GUILayout.Label(externalSetting.ErrorText, GetLabelStyle());
 
             if (!Utilities.ComboBox.IsShown())
                 GUI.enabled = guiEnabled;
@@ -478,7 +493,8 @@ namespace ConfigurationManager
 
             GUILayout.BeginHorizontal(GUILayout.Width(LeftColumnWidth), GUILayout.MaxWidth(LeftColumnWidth));
             GUILayout.Label(new GUIContent(setting.DispName.TrimStart('!'), setting.Description), GetLabelStyleSettingName(), GUILayout.ExpandWidth(true));
-            if (GUILayout.Button(new GUIContent(UiText.EditText, setting.Description), GetButtonStyle(), GUILayout.ExpandWidth(false)))
+            if (!(setting is ExternalSettingEntry external && external.UsesInlineNumericEditor) &&
+                GUILayout.Button(new GUIContent(UiText.EditText, setting.Description), GetButtonStyle(), GUILayout.ExpandWidth(false)))
                 _configSettingWindow.EditSetting(setting);
 
             GUILayout.EndHorizontal();
@@ -502,7 +518,12 @@ namespace ConfigurationManager
             if (setting.DefaultValue != null)
             {
                 if (DrawResetButton())
-                    setting.Set(setting.DefaultValue);
+                {
+                    if (setting is ExternalSettingEntry external && external.UsesInlineNumericEditor)
+                        external.NumericEditor.Reset();
+                    else
+                        setting.Set(setting.DefaultValue);
+                }
             }
             else if (setting.SettingType.IsClass)
             {
@@ -515,6 +536,11 @@ namespace ConfigurationManager
 
         public void BuildSettingList()
         {
+            // Capture before collecting: a concurrent registration cannot be mistaken
+            // for one already included in the newly built list.
+            _externalSettingsRevision = ExternalSettingsRegistry.Revision;
+            _configSettingWindow?.CloseUnregisteredExternalSetting();
+            SettingFieldDrawer.ClearCache();
             SettingSearcher.CollectSettings(out var results, out var modsWithoutSettings);
 
             _modsWithoutSettings = string.Join(", ", modsWithoutSettings.Select(x => x.TrimStart('!')).OrderBy(x => x).ToArray());
@@ -536,11 +562,13 @@ namespace ConfigurationManager
                     group => group.Select(setting => setting.CategoryOrder).Where(order => order != 0).DefaultIfEmpty(0).Max());
 
             if (HideSettings())
-                results = results.Where(x => !(x is ConfigSettingEntry configEntry) || !configEntry.ShouldBeHidden());
+                results = results.Where(x => x is ConfigSettingEntry configEntry ? !configEntry.ShouldBeHidden() :
+                    !(x is ExternalSettingEntry externalEntry) || !externalEntry.ShouldBeHidden());
 
             if (IsSearching)
             {
-                results = results.Where(x => ContainsSearchString(x, SearchString.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries)));
+                string[] searchTokens = SearchString.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                results = results.Where(x => ContainsSearchString(x, searchTokens));
             }
             else
             {

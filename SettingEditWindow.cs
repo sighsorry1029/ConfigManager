@@ -27,13 +27,14 @@ namespace ConfigurationManager
 
         private static IEnumerable<KeyCode> _keysToCheck;
 
-        private static readonly Dictionary<SettingEntryBase, ColorCacheEntry> ColorCache = new Dictionary<SettingEntryBase, ColorCacheEntry>();
+        private ColorCacheEntry _colorPreview;
 
         private Vector2 _scrollPosition = Vector2.zero;
         private Vector2 _scrollPositionEnum = Vector2.zero;
 
         private int listIndex = -1;
         private IList listEnum = null;
+        private GUIContent[] _enumContent;
 
         private Action drawerFunction;
 
@@ -42,6 +43,8 @@ namespace ConfigurationManager
         private object valueToSet;
 
         private string errorOnSetting;
+        private string _externalText;
+        private bool _externalTextEdited;
 
         private readonly List<string> vectorParts = new List<string>();
         private readonly List<float> vectorFloats = new List<float>();
@@ -76,6 +79,7 @@ namespace ConfigurationManager
 
         public void EditSetting(SettingEntryBase setting)
         {
+            if (setting is ExternalSettingEntry external && (external.ReadOnly == true || !external.IsActive)) return;
             if (this.setting == setting && IsOpen)
             {
                 IsOpen = false;
@@ -89,7 +93,35 @@ namespace ConfigurationManager
             IsOpen = true;
         }
 
-        public bool IsOpen { get; set; }
+        private bool _isOpen;
+        public bool IsOpen
+        {
+            get => _isOpen;
+            set
+            {
+                _isOpen = value;
+                if (!value) ClearCache();
+            }
+        }
+
+        internal void CloseUnregisteredExternalSetting()
+        {
+            if (setting is ExternalSettingEntry external && !external.IsActive) Dispose();
+        }
+
+        internal void Dispose()
+        {
+            IsOpen = false;
+            setting = null;
+            drawerFunction = null;
+            valueToSet = null;
+            listEnum = null;
+            _enumContent = null;
+            dummyCustomDrawerConfigEntry = null;
+            _externalText = null;
+            _externalTextEdited = false;
+            _currentKeyboardShortcutToSet = null;
+        }
 
         public void OnGUI()
         {
@@ -127,10 +159,10 @@ namespace ConfigurationManager
                 }
                 catch
                 {
-                    separatedString.AddRange(valueToSet.ToString().Split(new string[] { separator }, StringSplitOptions.None));
+                    separatedString.AddRange((valueToSet?.ToString() ?? string.Empty).Split(new string[] { separator }, StringSplitOptions.None));
                 }
             else
-                separatedString.AddRange(valueToSet.ToString().Split(new string[] { separator }, StringSplitOptions.None));
+                separatedString.AddRange((valueToSet?.ToString() ?? string.Empty).Split(new string[] { separator }, StringSplitOptions.None));
 
             separatedStringDefault.Clear();
             if (setting.DefaultValue != null)
@@ -149,10 +181,14 @@ namespace ConfigurationManager
 
         private void InitializeWindow()
         {
+            ClearCache();
             listEnum = null;
+            _enumContent = null;
             listIndex = -1;
             drawerFunction = null;
             valueToSet = setting.SettingType == typeof(Color) ? Utilities.Utils.RoundColorToHEX((Color)setting.Get()) : setting.Get();
+            _externalText = (setting as ExternalSettingEntry)?.FormatValue(valueToSet);
+            _externalTextEdited = false;
             errorText = string.Empty;
             errorOnSetting = string.Empty;
             colorAsHEX = setting.SettingType == typeof(Color) ? $"#{ColorUtility.ToHtmlStringRGBA((Color)valueToSet)}" : string.Empty;
@@ -190,8 +226,18 @@ namespace ConfigurationManager
                 SetAcceptableValuesDrawer();
             else if (setting.SettingType.IsEnum && setting.SettingType != typeof(KeyCode))
             {
-                listEnum = Enum.GetValues(setting.SettingType);
-                if (setting.SettingType.GetCustomAttributes(typeof(FlagsAttribute), false).Any())
+                ExternalEnumCache externalCache = setting is ExternalSettingEntry externalEnum
+                    ? SettingFieldDrawer.GetExternalEnumCache(externalEnum) : null;
+                if (externalCache?.IsEligible == true)
+                {
+                    listEnum = externalCache.Values;
+                    _enumContent = externalCache.Contents;
+                }
+                else
+                    listEnum = Enum.GetValues(setting.SettingType);
+                bool isFlags = externalCache?.IsEligible == true ? externalCache.IsFlags :
+                    setting.SettingType.GetCustomAttributes(typeof(FlagsAttribute), false).Any();
+                if (isFlags)
                     drawerFunction = DrawFlagsField;
                 else
                     drawerFunction = DrawEnumListField;
@@ -199,11 +245,40 @@ namespace ConfigurationManager
             else
                 SettingDrawHandlers.TryGetValue(setting.SettingType, out drawerFunction);
 
+            if (setting.SettingType == typeof(KeyCode) && listEnum == null)
+                listEnum = Enum.GetValues(setting.SettingType);
+
+            // Plain enum labels are immutable. Custom description attributes and
+            // other acceptable objects may produce different text on each draw.
+            if (_enumContent == null && listEnum != null && setting.SettingType.IsEnum)
+            {
+                try
+                {
+                    if (listEnum.Cast<object>().All(HasStaticEnumLabel))
+                        _enumContent = listEnum.Cast<object>().Select(SettingFieldDrawer.ObjectToGuiContent).ToArray();
+                }
+                catch
+                {
+                    // Keep label/attribute failures inside DrawKnownDrawer's existing
+                    // error isolation instead of preventing the editor from opening.
+                }
+            }
+
             InitListIndex();
 
             InitVectorParts();
 
-            UpdateStringList();
+            if (!(setting is ExternalSettingEntry external && external.UsesTextEditor))
+                UpdateStringList();
+        }
+
+        private static bool HasStaticEnumLabel(object value)
+        {
+            if (!(value is Enum)) return false;
+            MemberInfo member = value.GetType().GetMember(value.ToString()).FirstOrDefault();
+            return member == null || member.GetCustomAttributesData().All(attribute =>
+                attribute.AttributeType == typeof(System.ComponentModel.DescriptionAttribute) ||
+                !typeof(System.ComponentModel.DescriptionAttribute).IsAssignableFrom(attribute.AttributeType));
         }
 
         private void InitListIndex()
@@ -304,6 +379,8 @@ namespace ConfigurationManager
 
             if (!errorOnSetting.IsNullOrWhiteSpace())
                 GUILayout.Label(errorOnSetting, GetLabelStyle());
+            else if (setting is ExternalSettingEntry external && !string.IsNullOrEmpty(external.ErrorText))
+                GUILayout.Label(external.ErrorText, GetLabelStyle());
 
             DrawDelimiterLine();
 
@@ -389,17 +466,24 @@ namespace ConfigurationManager
 
         private void DrawMenuButtons()
         {
+            ExternalSettingEntry external = setting as ExternalSettingEntry;
+            bool externalText = external != null && external.UsesTextEditor;
             GUILayout.BeginHorizontal();
             {
                 var enabled = GUI.enabled;
-                GUI.enabled = enabled && !IsValueToSetDefaultValue();
-                DrawDefaultButton();
+                GUI.enabled = enabled && !IsPendingValueEqualTo(setting.DefaultValue);
+                if (externalText)
+                {
+                    if (GUILayout.Button(UiText.ResetSettingText, GetButtonStyle(), GUILayout.ExpandWidth(false)))
+                        ResetExternalValue();
+                }
+                else DrawDefaultButton();
                 GUI.enabled = enabled;
 
                 GUILayout.Label(UiText.PressEscapeHintEditWindow, GetLabelStyleInfo(), GUILayout.ExpandWidth(true));
 
                 enabled = GUI.enabled;
-                GUI.enabled = enabled && !IsEqualConfigValues(setting.SettingType, valueToSet, setting.Get());
+                GUI.enabled = enabled && !IsPendingValueEqualTo(setting.Get());
                 if (GUILayout.Button(UiText.ApplyButtonEditWindow, GetButtonStyle(), GUILayout.ExpandWidth(false)))
                     ApplySettingValue();
 
@@ -413,11 +497,26 @@ namespace ConfigurationManager
 
         private void ApplySettingValue()
         {
+            if (setting is ExternalSettingEntry readOnly && readOnly.ReadOnly == true) return;
+            if (setting is ExternalSettingEntry external && external.UsesTextEditor)
+            {
+                // Keep the typed initial/reset value until the user actually edits
+                // the text, so a null default is not converted to an empty string.
+                bool applied = _externalTextEdited ? external.TrySetText(_externalText) : external.TrySet(valueToSet);
+                if (applied) InitializeWindow();
+                else errorOnSetting = external.ErrorText;
+                return;
+            }
             if (valueToSet != null)
             {
                 try
                 {
                     setting.Set(valueToSet);
+                    if (setting is ExternalSettingEntry externalSetting && !string.IsNullOrEmpty(externalSetting.ErrorText))
+                    {
+                        errorOnSetting = externalSetting.ErrorText;
+                        return;
+                    }
                     InitializeWindow();
                 }
                 catch (Exception e)
@@ -427,6 +526,45 @@ namespace ConfigurationManager
             }
         }
 
+        private void ResetExternalValue()
+        {
+            if (setting.ReadOnly == true) return;
+            valueToSet = setting.DefaultValue;
+            _externalText = ((ExternalSettingEntry)setting).FormatValue(valueToSet);
+            _externalTextEdited = false;
+            errorOnSetting = string.Empty;
+        }
+
+        private void SetExternalText(string text)
+        {
+            if (string.Equals(_externalText, text, StringComparison.Ordinal)) return;
+            _externalText = text;
+            _externalTextEdited = true;
+        }
+
+        private bool IsPendingValueEqualTo(object value)
+        {
+            if (setting is ExternalSettingEntry external && external.UsesTextEditor && _externalTextEdited)
+                return string.Equals(_externalText, setting.SettingType == typeof(string)
+                    ? (string)value : external.FormatValue(value), StringComparison.Ordinal);
+
+            if (valueToSet == null || value == null) return valueToSet == value;
+            return setting.SettingType == typeof(string)
+                ? string.Equals((string)valueToSet, (string)value, StringComparison.Ordinal)
+                : IsEqualConfigValues(setting.SettingType, valueToSet, value);
+        }
+
+        private void ChangeStringView(int view)
+        {
+            if (editStringView == view) return;
+            // The text editor changes valueToSet; refresh the list before it can
+            // overwrite that value with rows from the previous visit.
+            if (view > 0) UpdateStringList();
+            editStringView = view;
+        }
+
+        private void UpdateValueFromStringList() => valueToSet = setting.StrToObj(string.Join(separator, separatedString));
+
         private void DrawSettingValue()
         {
             var color = GUI.backgroundColor;
@@ -435,7 +573,13 @@ namespace ConfigurationManager
             bool drawStringMenu = false;
             _scrollPosition = GUILayout.BeginScrollView(_scrollPosition);
             {
-                if (!DrawCustomField() && !DrawKnownDrawer())
+                if (setting is ExternalSettingEntry external && external.UsesTextEditor)
+                {
+                    SetExternalText(setting.SettingType == typeof(string)
+                        ? GUILayout.TextArea(_externalText ?? string.Empty, GUILayout.MinHeight(100))
+                        : GUILayout.TextField(_externalText ?? string.Empty));
+                }
+                else if (!DrawCustomField() && !DrawKnownDrawer())
                 {
                     if (errorText.Length > 0)
                         GUILayout.Label($"Error:\n{errorText}", GetLabelStyle());
@@ -449,10 +593,7 @@ namespace ConfigurationManager
             {
                 GUILayout.BeginHorizontal();
                 GUILayout.Label(UiText.EditAsLabelEditWindow, GetLabelStyle(), GUILayout.ExpandWidth(false));
-                if (editStringView != (editStringView = GUILayout.SelectionGrid(editStringView, new[] { UiText.EditAsTextEditWindow, UiText.EditAsListEditWindow }, 2, GetButtonStyle(), GUILayout.ExpandWidth(false))))
-                {
-                    // On view mode change?
-                }
+                ChangeStringView(GUILayout.SelectionGrid(editStringView, new[] { UiText.EditAsTextEditWindow, UiText.EditAsListEditWindow }, 2, GetButtonStyle(), GUILayout.ExpandWidth(false)));
 
                 if (editStringView > 0)
                 {
@@ -463,7 +604,7 @@ namespace ConfigurationManager
                     if (GUILayout.Button(UiText.TrimWhitespaceButtonEditWindow, GetButtonStyle(), GUILayout.ExpandWidth(false)))
                     {
                         separatedString = separatedString.Select(s => s.Trim()).ToList();
-                        valueToSet = setting.StrToObj(string.Join(separator, separatedString));
+                        UpdateValueFromStringList();
                     }
                 }
                 GUILayout.EndHorizontal();
@@ -637,7 +778,7 @@ namespace ConfigurationManager
                     if (editStringView > 0)
                     {
                         DrawEditableList();
-                        valueToSet = setting.StrToObj(string.Join(separator, separatedString));
+                        UpdateValueFromStringList();
                         GUILayout.FlexibleSpace();
                     }
                     else
@@ -752,11 +893,11 @@ namespace ConfigurationManager
             }
         }
 
-        public static void ClearCache()
+        public void ClearCache()
         {
-            foreach (var tex in ColorCache)
-                UnityEngine.Object.Destroy(tex.Value.Tex);
-            ColorCache.Clear();
+            if (_colorPreview == null) return;
+            UnityEngine.Object.Destroy(_colorPreview.Tex);
+            _colorPreview = null;
         }
 
         internal void DrawDefaultButton()
@@ -833,33 +974,39 @@ namespace ConfigurationManager
             var currentValue = Convert.ToInt64(valueToSet);
             var defaultValue = Convert.ToInt64(setting.DefaultValue);
 
-            var allValues = Enum.GetValues(setting.SettingType).Cast<Enum>().Select(x => new { name = x.ToString(), val = Convert.ToInt64(x) }).ToArray();
+            ExternalEnumCache externalCache = GetExternalFlagsCache();
+            var allValues = externalCache == null
+                ? Enum.GetValues(setting.SettingType).Cast<Enum>().Select(x => new { name = x.ToString(), val = Convert.ToInt64(x) }).ToArray()
+                : null;
+            int count = externalCache?.FlagMasks.Length ?? allValues.Length;
 
             float maxWidth = _windowRect.width * 0.8f;
 
             // Vertically stack Horizontal groups of the options to deal with the options taking more width than is available in the window
             GUILayout.BeginVertical(GUILayout.MaxWidth(maxWidth));
             {
-                for (var index = 0; index < allValues.Length;)
+                for (var index = 0; index < count;)
                 {
                     GUILayout.BeginHorizontal();
                     {
                         var currentWidth = 0;
                         bool drewAny = false;
-                        for (; index < allValues.Length; index++)
+                        for (; index < count; index++)
                         {
-                            var value = allValues[index];
+                            long mask = externalCache == null ? allValues[index].val : externalCache.FlagMasks[index];
 
                             // Skip the 0 / none enum value, just uncheck everything to get 0
-                            if (value.val != 0)
+                            if (mask != 0)
                             {
-                                bool curr = (currentValue & value.val) == value.val;
-                                bool defValue = (defaultValue & value.val) == value.val;
+                                bool curr = (currentValue & mask) == mask;
+                                bool defValue = (defaultValue & mask) == mask;
+                                GUIContent content = externalCache == null
+                                    ? new GUIContent(allValues[index].name) : externalCache.FlagContents[index];
 
                                 GUIStyle style = GetButtonStyle(curr == defValue);
 
                                 // Make sure this horizontal group doesn't extend over window width, if it does then start a new horiz group below
-                                var textDimension = (int)style.CalcSize(new GUIContent(value.name)).x;
+                                var textDimension = (int)style.CalcSize(content).x;
                                 if (currentWidth + textDimension > maxWidth && drewAny)
                                     break;
 
@@ -867,13 +1014,17 @@ namespace ConfigurationManager
                                 currentWidth += textDimension;
                                 GUI.changed = false;
 
-                                if (GUILayout.Button(value.name, style, GUILayout.ExpandWidth(false)))
+                                if (GUILayout.Button(content, style, GUILayout.ExpandWidth(false)))
                                     curr = !curr;
 
                                 if (GUI.changed)
                                 {
-                                    var newValue = curr ? currentValue | value.val : currentValue & ~value.val;
-                                    valueToSet = Enum.ToObject(setting.SettingType, newValue);
+                                    if (externalCache != null) SetExternalFlag(index, curr);
+                                    else
+                                    {
+                                        var newValue = curr ? currentValue | mask : currentValue & ~mask;
+                                        valueToSet = Enum.ToObject(setting.SettingType, newValue);
+                                    }
                                 }
                             }
                         }
@@ -890,9 +1041,19 @@ namespace ConfigurationManager
             GUILayout.FlexibleSpace();
         }
 
+        private ExternalEnumCache GetExternalFlagsCache()
+        {
+            if (!(setting is ExternalSettingEntry external)) return null;
+            ExternalEnumCache cache = SettingFieldDrawer.GetExternalEnumCache(external);
+            return cache.IsEligible && cache.IsFlags ? cache : null;
+        }
+
+        private void SetExternalFlag(int index, bool enabled)
+            => valueToSet = GetExternalFlagsCache().ChangeFlag(valueToSet, index, enabled);
+
         private void DrawEnumListField()
         {
-            var listContent = listEnum.Cast<object>().Select(SettingFieldDrawer.ObjectToGuiContent).ToArray();
+            var listContent = _enumContent ?? listEnum.Cast<object>().Select(SettingFieldDrawer.ObjectToGuiContent).ToArray();
 
             _scrollPositionEnum = GUILayout.BeginScrollView(_scrollPositionEnum, false, false);
 
@@ -933,8 +1094,6 @@ namespace ConfigurationManager
             }
             else
             {
-                listEnum ??= Enum.GetValues(setting.SettingType);
-
                 DrawEnumListField();
 
                 if (GUILayout.Button(new GUIContent(UiText.ShortcutKeyText), GetButtonStyle(), GUILayout.ExpandWidth(false)))
@@ -1030,12 +1189,12 @@ namespace ConfigurationManager
             GUIHelper.BeginColor(value);
             GUILayout.Label(string.Empty, GUILayout.ExpandWidth(true));
 
-            if (!ColorCache.TryGetValue(setting, out var cacheEntry))
+            if (_colorPreview == null)
             {
-                cacheEntry = new ColorCacheEntry { Tex = new Texture2D(40, 10, TextureFormat.ARGB32, false), Last = value };
-                cacheEntry.Tex.FillTexture(value);
-                ColorCache[setting] = cacheEntry;
+                _colorPreview = new ColorCacheEntry { Tex = new Texture2D(40, 10, TextureFormat.ARGB32, false), Last = value };
+                _colorPreview.Tex.FillTexture(value);
             }
+            var cacheEntry = _colorPreview;
 
             if (Event.current.type == EventType.Repaint)
             {

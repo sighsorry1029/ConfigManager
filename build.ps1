@@ -1,5 +1,6 @@
 param(
-    [string]$ValheimGamePath = ""
+    [string]$ValheimGamePath = "",
+    [switch]$SkipPackaging
 )
 
 $ErrorActionPreference = "Stop"
@@ -70,6 +71,8 @@ if (-not $ValheimGamePath)
 {
     throw "Valheim was not found. Pass -ValheimGamePath explicitly."
 }
+
+& (Join-Path $projectRoot "RunExternalSettingsTests.ps1") -AssemblyPath $dll -BepInExPath (Join-Path $ValheimGamePath "BepInEx") -ManagedAssembliesPath (Join-Path $ValheimGamePath "valheim_Data\Managed") -SkipPluginBuild
 
 $cecilPath = Join-Path $ValheimGamePath "BepInEx\core\Mono.Cecil.dll"
 if (-not (Test-Path $cecilPath))
@@ -191,4 +194,7 @@ $hash = (Get-FileHash $dll -Algorithm SHA256).Hash
 Write-Output "Built $dll"
 Write-Output "SHA256 $hash"
 
-& (Join-Path $projectRoot "PackageRelease.ps1") -ProjectRoot $projectRoot -AssemblyPath $dll -CreateNexusPackage
+if (-not $SkipPackaging)
+{
+    & (Join-Path $projectRoot "PackageRelease.ps1") -ProjectRoot $projectRoot -AssemblyPath $dll -CreateNexusPackage
+}

@@ -49,12 +49,15 @@
     <BepInExPath Condition="'$(BepInExPath)' == ''">$(ValheimGamePath)\BepInEx</BepInExPath>
     <ManagedAssembliesPath Condition="'$(ManagedAssembliesPath)' == ''">$(ValheimGamePath)\valheim_Data\Managed</ManagedAssembliesPath>
     <PublicizedAssembliesPath Condition="'$(PublicizedAssembliesPath)' == ''">$(ManagedAssembliesPath)\publicized_assemblies</PublicizedAssembliesPath>
+    <DeployToGame Condition="'$(DeployToGame)' == ''">false</DeployToGame>
+    <GamePluginPath Condition="'$(GamePluginPath)' == ''">$(BepInExPath)\plugins</GamePluginPath>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="ConfigurationManagerAttributes.cs" />
     <Compile Include="ConfigOptions.cs" />
     <Compile Include="ConfigFilesEditor.cs" />
     <Compile Include="ConfigSettingEntry.cs" />
+    <Compile Include="ExternalSettings.cs" />
     <Compile Include="HiddenSettingsParser.cs" />
     <Compile Include="SettingEditWindow.cs" />
     <Compile Include="LegacySettingEntry.cs" />
@@ -160,6 +163,14 @@
     <Error Condition="!Exists('$(BepInExPath)\core\BepInEx.dll')" Text="BepInEx.dll was not found under $(BepInExPath)\core." />
     <Error Condition="!Exists('$(PublicizedAssembliesPath)\assembly_valheim_publicized.dll')" Text="Publicized Valheim assemblies were not found under $(PublicizedAssembliesPath)." />
     <Error Condition="!Exists('$(ManagedAssembliesPath)\UnityEngine.CoreModule.dll')" Text="Unity managed assemblies were not found under $(ManagedAssembliesPath)." />
+  </Target>
+  <Target Name="DeployDebugToGame"
+          AfterTargets="Build"
+          Condition="'$(Configuration)' == 'Debug' And '$(DeployToGame)' == 'true' And '$(DesignTimeBuild)' != 'true'">
+    <Error Condition="!Exists('$(TargetPath)')" Text="Debug DLL was not found: $(TargetPath)" />
+    <Message Importance="high" Text="Debug build succeeded. Copying $(TargetFileName) to $(GamePluginPath)." />
+    <MakeDir Directories="$(GamePluginPath)" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFiles="$(GamePluginPath)\$(TargetFileName)" SkipUnchangedFiles="false" />
   </Target>
   <Target Name="PackageRelease"
           AfterTargets="Build"

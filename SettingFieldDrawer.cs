@@ -24,10 +24,17 @@ namespace ConfigurationManager
 
         private static readonly Dictionary<SettingEntryBase, ComboBox> ComboBoxCache = new Dictionary<SettingEntryBase, ComboBox>();
         private static readonly Dictionary<SettingEntryBase, ColorCacheEntry> ColorCache = new Dictionary<SettingEntryBase, ColorCacheEntry>();
+        private static readonly Dictionary<ExternalSettingEntry, ExternalEnumCache> ExternalEnumCaches =
+            new Dictionary<ExternalSettingEntry, ExternalEnumCache>();
 
         private static ConfigurationManager _instance;
 
         private static SettingEntryBase _currentKeyboardShortcutToSet;
+        private static ExternalNumericEditor _activeExternalNumber;
+        private static string _cancelledNumericControl;
+        private static Rect _activeNumericScreenRect;
+        private static bool _activeNumericRectValid;
+        private static bool _activeNumericDrawn;
 
         public static bool SettingKeyboardShortcut => _currentKeyboardShortcutToSet != null;
 
@@ -57,22 +64,28 @@ namespace ConfigurationManager
         {
             var color = GUI.backgroundColor;
             GUI.backgroundColor = Palette.Widget;
+            try
+            {
+                if (DrawCustomField(setting))
+                    return;
 
-            if (DrawCustomField(setting))
-                return;
-
-            if (setting.AcceptableValueRange.Key != null)
-                DrawRangeField(setting);
-            else if (setting.AcceptableValues != null)
-                DrawListField(setting);
-            else if (DrawFieldBasedOnValueType(setting))
-                return;
-            else if (setting.SettingType.IsEnum)
-                DrawEnumField(setting);
-            else
-                DrawUnknownField(setting, _instance.RightColumnWidth);
-
-            GUI.backgroundColor = color;
+                if (setting is ExternalSettingEntry external && external.UsesInlineNumericEditor)
+                    DrawExternalNumericField(external);
+                else if (setting.AcceptableValueRange.Key != null)
+                    DrawRangeField(setting);
+                else if (setting.AcceptableValues != null)
+                    DrawListField(setting);
+                else if (DrawFieldBasedOnValueType(setting))
+                    return;
+                else if (setting.SettingType.IsEnum)
+                    DrawEnumField(setting);
+                else
+                    DrawUnknownField(setting, _instance.RightColumnWidth);
+            }
+            finally
+            {
+                GUI.backgroundColor = color;
+            }
         }
 
         public bool DrawCustomField(SettingEntryBase setting)
@@ -145,16 +158,116 @@ namespace ConfigurationManager
 
         public static void ClearCache()
         {
+            FinishExternalNumericEdit();
             ClearComboboxCache();
+            _currentKeyboardShortcutToSet = null;
 
             foreach (var tex in ColorCache)
                 UnityEngine.Object.Destroy(tex.Value.Tex);
             ColorCache.Clear();
         }
 
+        internal static void Release()
+        {
+            ClearCache();
+            _cancelledNumericControl = null;
+            CustomFieldDrawerFailed.Clear();
+            _instance = null;
+        }
+
+        internal static bool CancelExternalNumericEdit()
+        {
+            if (_activeExternalNumber == null || !_activeExternalNumber.IsFocused) return false;
+            _cancelledNumericControl = _activeExternalNumber.ControlName;
+            _activeExternalNumber.Cancel();
+            _activeExternalNumber = null;
+            _activeNumericRectValid = false;
+            return true;
+        }
+
+        private static void FinishExternalNumericEdit()
+        {
+            ExternalNumericEditor editor = _activeExternalNumber;
+            _activeExternalNumber = null;
+            _activeNumericRectValid = false;
+            editor?.HandleInput(editor.Text, false, false, false);
+        }
+
+        internal static void BeginExternalNumericGUI()
+        {
+            _activeNumericDrawn = false;
+            if (_cancelledNumericControl != null)
+            {
+                if (GUI.GetNameOfFocusedControl() == _cancelledNumericControl) GUI.FocusControl(null);
+                _cancelledNumericControl = null;
+            }
+            // Buttons need not take keyboard focus. Submit before their action,
+            // including Reset, when clicking outside the active numeric field.
+            if (_activeExternalNumber != null && _activeNumericRectValid &&
+                Event.current.type == EventType.MouseDown &&
+                !_activeNumericScreenRect.Contains(GUIUtility.GUIToScreenPoint(Event.current.mousePosition)))
+            {
+                FinishExternalNumericEdit();
+                GUI.FocusControl(null);
+            }
+        }
+
+        internal static void EndExternalNumericGUI()
+        {
+            if (_activeExternalNumber != null && (!_activeNumericDrawn ||
+                GUI.GetNameOfFocusedControl() != _activeExternalNumber.ControlName))
+                FinishExternalNumericEdit();
+        }
+
+        internal static void HandleExternalNumericInput(ExternalSettingEntry setting,
+            string text, bool focused, bool enter, bool escape)
+        {
+            ExternalNumericEditor editor = setting.NumericEditor;
+            if (focused && _activeExternalNumber != editor) FinishExternalNumericEdit();
+            editor.HandleInput(text, focused, enter, escape);
+            if (editor.IsFocused) _activeExternalNumber = editor;
+            else if (_activeExternalNumber == editor)
+            {
+                _activeExternalNumber = null;
+                _activeNumericRectValid = false;
+            }
+        }
+
+        private static void DrawExternalNumericField(ExternalSettingEntry setting)
+        {
+            ExternalNumericEditor editor = setting.NumericEditor;
+            editor.Refresh();
+            bool focused = GUI.GetNameOfFocusedControl() == editor.ControlName;
+            Event current = Event.current;
+            bool keyDown = focused && current.type == EventType.KeyDown;
+            bool enter = keyDown && (current.keyCode == KeyCode.Return || current.keyCode == KeyCode.KeypadEnter);
+            bool escape = keyDown && current.keyCode == KeyCode.Escape;
+            if (enter || escape) current.Use();
+
+            GUI.SetNextControlName(editor.ControlName);
+            string text = GUILayout.TextField(editor.Text, GetTextStyle(setting), GUILayout.ExpandWidth(true));
+            HandleExternalNumericInput(setting, text,
+                GUI.GetNameOfFocusedControl() == editor.ControlName, enter, escape);
+            if (escape) GUI.FocusControl(null);
+            if (_activeExternalNumber == editor)
+            {
+                _activeNumericDrawn = true;
+                if (current.type == EventType.Repaint)
+                {
+                    Rect fieldRect = GUILayoutUtility.GetLastRect();
+                    Vector2 topLeft = GUIUtility.GUIToScreenPoint(fieldRect.min);
+                    Vector2 bottomRight = GUIUtility.GUIToScreenPoint(fieldRect.max);
+                    _activeNumericScreenRect = Rect.MinMaxRect(topLeft.x, topLeft.y, bottomRight.x, bottomRight.y);
+                    _activeNumericRectValid = true;
+                }
+            }
+        }
+
         public static void ClearComboboxCache()
         {
             ComboBoxCache.Clear();
+            ExternalEnumCaches.Clear();
+            ComboBox.CurrentDropdownDrawer = null;
         }
 
         public static void DrawCenteredLabel(string text, GUIStyle labelStyle)
@@ -248,42 +361,70 @@ namespace ConfigurationManager
 
         private static void DrawEnumField(SettingEntryBase setting)
         {
+            if (setting is ExternalSettingEntry external)
+            {
+                ExternalEnumCache cache = GetExternalEnumCache(external);
+                if (cache.IsEligible)
+                {
+                    if (cache.IsFlags)
+                        DrawFlagsField(setting, null, (int)(_instance.RightColumnWidth * 0.8f), cache);
+                    else
+                        DrawComboboxField(setting, cache.Values, _instance.currentWindowRect.yMax, cache);
+                    return;
+                }
+            }
             if (setting.SettingType.GetCustomAttributes(typeof(FlagsAttribute), false).Any())
                 DrawFlagsField(setting, Enum.GetValues(setting.SettingType), (int)(_instance.RightColumnWidth * 0.8f));
             else
                 DrawComboboxField(setting, Enum.GetValues(setting.SettingType), _instance.currentWindowRect.yMax);
         }
 
-        private static void DrawFlagsField(SettingEntryBase setting, IList enumValues, int maxWidth)
+        internal static ExternalEnumCache GetExternalEnumCache(ExternalSettingEntry setting)
+        {
+            if (!ExternalEnumCaches.TryGetValue(setting, out ExternalEnumCache cache))
+            {
+                cache = new ExternalEnumCache(setting);
+                ExternalEnumCaches.Add(setting, cache);
+            }
+            return cache;
+        }
+
+        private static void DrawFlagsField(SettingEntryBase setting, IList enumValues, int maxWidth,
+            ExternalEnumCache externalCache = null)
         {
             var currentValue = Convert.ToInt64(setting.Get());
             var defaultValue = Convert.ToInt64(setting.DefaultValue);
 
-            var allValues = enumValues.Cast<Enum>().Select(x => new { name = x.ToString(), val = Convert.ToInt64(x) }).ToArray();
+            var allValues = externalCache == null
+                ? enumValues.Cast<Enum>().Select(x => new { name = x.ToString(), val = Convert.ToInt64(x) }).ToArray()
+                : null;
+            int count = externalCache?.FlagMasks.Length ?? allValues.Length;
 
             // Vertically stack Horizontal groups of the options to deal with the options taking more width than is available in the window
             GUILayout.BeginVertical(GUILayout.MaxWidth(maxWidth));
             {
-                for (var index = 0; index < allValues.Length;)
+                for (var index = 0; index < count;)
                 {
                     GUILayout.BeginHorizontal();
                     {
                         var currentWidth = 0;
                         bool drewAny = false;
-                        for (; index < allValues.Length; index++)
+                        for (; index < count; index++)
                         {
-                            var value = allValues[index];
+                            long mask = externalCache == null ? allValues[index].val : externalCache.FlagMasks[index];
 
                             // Skip the 0 / none enum value, just uncheck everything to get 0
-                            if (value.val != 0)
+                            if (mask != 0)
                             {
-                                bool curr = (currentValue & value.val) == value.val;
-                                bool defValue = (defaultValue & value.val) == value.val;
+                                bool curr = (currentValue & mask) == mask;
+                                bool defValue = (defaultValue & mask) == mask;
+                                GUIContent content = externalCache == null
+                                    ? new GUIContent(allValues[index].name) : externalCache.FlagContents[index];
 
                                 GUIStyle style = GetToggleStyle(curr == defValue);
 
                                 // Make sure this horizontal group doesn't extend over window width, if it does then start a new horiz group below
-                                var textDimension = (int)style.CalcSize(new GUIContent(value.name)).x;
+                                var textDimension = (int)style.CalcSize(content).x;
                                 if (currentWidth + textDimension > maxWidth && drewAny)
                                     break;
 
@@ -291,11 +432,15 @@ namespace ConfigurationManager
                                 currentWidth += textDimension;
                                 GUI.changed = false;
 
-                                var newVal = GUILayout.Toggle(curr, value.name, style, GUILayout.ExpandWidth(false));
+                                var newVal = GUILayout.Toggle(curr, content, style, GUILayout.ExpandWidth(false));
                                 if (GUI.changed)
                                 {
-                                    var newValue = newVal ? currentValue | value.val : currentValue & ~value.val;
-                                    setting.Set(Enum.ToObject(setting.SettingType, newValue));
+                                    if (externalCache != null) externalCache.SetFlag(index, newVal);
+                                    else
+                                    {
+                                        var newValue = newVal ? currentValue | mask : currentValue & ~mask;
+                                        setting.Set(Enum.ToObject(setting.SettingType, newValue));
+                                    }
                                 }
                             }
                         }
@@ -314,15 +459,17 @@ namespace ConfigurationManager
             GUILayout.FlexibleSpace();
         }
 
-        private static void DrawComboboxField(SettingEntryBase setting, IList list, float windowYmax)
+        private static void DrawComboboxField(SettingEntryBase setting, IList list, float windowYmax,
+            ExternalEnumCache externalCache = null)
         {
-            var buttonText = ObjectToGuiContent(setting.Get());
+            var buttonText = externalCache == null ? ObjectToGuiContent(setting.Get()) : externalCache.GetCurrentContent();
             var dispRect = GUILayoutUtility.GetRect(buttonText, GetButtonStyle(), GUILayout.ExpandWidth(true));
 
             if (!ComboBoxCache.TryGetValue(setting, out var box))
             {
                 box = new ComboBox(dispRect, buttonText,
-                                list.Cast<object>().Select(ObjectToGuiContent).ToArray(), ObjectToGuiContent(setting.DefaultValue),
+                                externalCache?.Contents ?? list.Cast<object>().Select(ObjectToGuiContent).ToArray(),
+                                externalCache?.DefaultContent ?? ObjectToGuiContent(setting.DefaultValue),
                                 GetButtonStyle(), GetButtonStyle(isDefaultValue:false),
                                 GetBoxStyle(),
                                 GetComboBoxStyle(),
@@ -336,6 +483,11 @@ namespace ConfigurationManager
                 box.ButtonContent = buttonText;
             }
 
+            if (externalCache != null)
+            {
+                box.Show(externalCache.SelectionChanged);
+                return;
+            }
             box.Show(id =>
             {
                 if (id >= 0 && id < list.Count)

@@ -57,7 +57,8 @@ namespace ConfigurationManager
         private FileEditState _fileNameState;
 
         private bool _isOpen;
-        private bool _clearCache;
+        private bool _fileTreeDirty;
+        private bool _watchingEnabled = true;
 
         private void SetFileEditState(FileEditState newState)
         {
@@ -84,7 +85,10 @@ namespace ConfigurationManager
             set
             {
                 if (_isOpen != (_isOpen = value))
-                    ClearCache();
+                {
+                    InvalidateFileTree();
+                    UpdateWatcherState();
+                }
             }
         }
 
@@ -181,6 +185,7 @@ namespace ConfigurationManager
 
                     _scrollPosition = GUILayout.BeginScrollView(_scrollPosition, GUILayout.Width(_windowRect.width * 0.3f));
                     _directoryDepth = 0;
+                    PrepareFileTreeDraw();
                     DrawDirectories(_directories);
                     GUILayout.EndScrollView();
                     DrawDirectoriesMenu();
@@ -334,6 +339,7 @@ namespace ConfigurationManager
             try
             {
                 File.Move(_activeFile, newPath);
+                InvalidateFileTree();
                 _activeFile = newPath;
                 SetFileEditState(FileEditState.None);
             }
@@ -348,16 +354,15 @@ namespace ConfigurationManager
             if (_activeFile.IsNullOrWhiteSpace())
                 return;
 
-            Directory.CreateDirectory(_trashBinDirectory);
-
-            string filename = Path.Combine(_trashBinDirectory, Path.GetFileName(_activeFile));
-            if (File.Exists(filename))
-                filename = Path.Combine(_trashBinDirectory, $"{Path.GetFileNameWithoutExtension(filename)}_{DateTime.UtcNow:yyyyMMdd_HHmmss}_{Guid.NewGuid():N}{Path.GetExtension(filename)}");
-
             try
             {
-                if (_activeFile != null)
-                    File.Move(_activeFile, filename);
+                Directory.CreateDirectory(_trashBinDirectory);
+                string filename = Path.Combine(_trashBinDirectory, Path.GetFileName(_activeFile));
+                if (File.Exists(filename))
+                    filename = Path.Combine(_trashBinDirectory, $"{Path.GetFileNameWithoutExtension(filename)}_{DateTime.UtcNow:yyyyMMdd_HHmmss}_{Guid.NewGuid():N}{Path.GetExtension(filename)}");
+
+                File.Move(_activeFile, filename);
+                InvalidateFileTree();
 
                 _activeFile = string.Empty;
                 _fileContent = string.Empty;
@@ -372,6 +377,10 @@ namespace ConfigurationManager
 
         private readonly Dictionary<string, string[]> _cachedFileTree = new Dictionary<string, string[]>();
         private readonly Dictionary<string, string[]> _cachedDirectories = new Dictionary<string, string[]>();
+        private readonly Dictionary<string, bool> _validFilesThisDraw = new Dictionary<string, bool>();
+        private readonly Dictionary<string, bool> _validDirectoriesThisDraw = new Dictionary<string, bool>();
+        // Match the original config-path comparison (string ==), including its case policy.
+        private readonly HashSet<string> _pluginConfigPaths = new HashSet<string>(StringComparer.Ordinal);
         private FileSystemWatcher[] _watchers = Array.Empty<FileSystemWatcher>();
 
         public ConfigFilesEditor()
@@ -388,35 +397,58 @@ namespace ConfigurationManager
                 watcher.IncludeSubdirectories = true;
                 watcher.SynchronizingObject = ThreadingHelper.SynchronizingObject;
 
-                watcher.Changed += (_, __) => ClearCache();
-                watcher.Created += (_, __) => ClearCache();
-                watcher.Deleted += (_, __) => ClearCache();
-                watcher.Renamed += (_, __) => ClearCache();
+                watcher.Changed += (_, __) => InvalidateFileTree();
+                watcher.Created += (_, __) => InvalidateFileTree();
+                watcher.Deleted += (_, __) => InvalidateFileTree();
+                watcher.Renamed += (_, __) => InvalidateFileTree();
             }
         }
 
-        private void ClearCache()
+        private void InvalidateFileTree()
         {
-            _clearCache = true;
-            foreach (var watcher in _watchers)
-                watcher.EnableRaisingEvents = IsOpen;
+            _fileTreeDirty = true;
         }
 
         internal void SetWatching(bool enabled)
         {
+            _watchingEnabled = enabled;
+            // A change while disabled cannot be reported by the watchers.
+            InvalidateFileTree();
+            UpdateWatcherState();
+        }
+
+        private void UpdateWatcherState()
+        {
             foreach (FileSystemWatcher watcher in _watchers)
-                watcher.EnableRaisingEvents = enabled && IsOpen;
+                watcher.EnableRaisingEvents = _watchingEnabled && IsOpen;
+        }
+
+        private void ClearInvalidatedFileTree()
+        {
+            if (!_fileTreeDirty)
+                return;
+
+            _cachedFileTree.Clear();
+            _cachedDirectories.Clear();
+            _validFilesThisDraw.Clear();
+            _validDirectoriesThisDraw.Clear();
+            _fileTreeDirty = false;
+        }
+
+        private void PrepareFileTreeDraw()
+        {
+            ClearInvalidatedFileTree();
+            _validFilesThisDraw.Clear();
+            _validDirectoriesThisDraw.Clear();
+            _pluginConfigPaths.Clear();
+            foreach (var plugin in Chainloader.PluginInfos.Values)
+                if (plugin.Instance?.Config?.ConfigFilePath is string configPath)
+                    _pluginConfigPaths.Add(configPath);
         }
 
         private string[] GetFiles(string path)
         {
-            if (_clearCache)
-            {
-                _cachedFileTree.Clear();
-                _cachedDirectories.Clear();
-            }
-
-            _clearCache = false;
+            ClearInvalidatedFileTree();
 
             if (_cachedFileTree.TryGetValue(path, out var cachedFiles))
                 return cachedFiles;
@@ -437,13 +469,7 @@ namespace ConfigurationManager
 
         private string[] GetDirectories(string path)
         {
-            if (_clearCache)
-            {
-                _cachedFileTree.Clear();
-                _cachedDirectories.Clear();
-            }
-
-            _clearCache = false;
+            ClearInvalidatedFileTree();
 
             if (_cachedDirectories.TryGetValue(path, out var cachedDirs))
                 return cachedDirs;
@@ -488,6 +514,17 @@ namespace ConfigurationManager
 
         private bool IsValidFile(string file)
         {
+            ClearInvalidatedFileTree();
+            if (_validFilesThisDraw.TryGetValue(file, out bool valid))
+                return valid;
+
+            valid = EvaluateFileVisibility(file);
+            _validFilesThisDraw[file] = valid;
+            return valid;
+        }
+
+        private bool EvaluateFileVisibility(string file)
+        {
             string filename = Path.GetFileName(file);
             if (filename == "manifest.json")
                 return false;
@@ -505,7 +542,7 @@ namespace ConfigurationManager
             if (string.Equals(filename, hiddenSettingsFileName, StringComparison.OrdinalIgnoreCase))
                 return SearchString.IsNullOrWhiteSpace() || filename.IndexOf(SearchString, StringComparison.OrdinalIgnoreCase) > -1;
 
-            if (Chainloader.PluginInfos.Values.Any(plugin => plugin.Instance.Config.ConfigFilePath == file))
+            if (_pluginConfigPaths.Contains(file))
                 return false;
 
             string extension = Path.GetExtension(file);
@@ -517,7 +554,13 @@ namespace ConfigurationManager
 
         private bool DirectoryContainsValidFiles(string path)
         {
-            return GetFiles(path).Any(IsValidFile) || GetDirectories(path).Any(DirectoryContainsValidFiles);
+            ClearInvalidatedFileTree();
+            if (_validDirectoriesThisDraw.TryGetValue(path, out bool valid))
+                return valid;
+
+            valid = GetFiles(path).Any(IsValidFile) || GetDirectories(path).Any(DirectoryContainsValidFiles);
+            _validDirectoriesThisDraw[path] = valid;
+            return valid;
         }
 
         private void LoadFileToEditor(string filePath)
@@ -600,13 +643,15 @@ namespace ConfigurationManager
                 if (isFolder)
                 {
                     Directory.CreateDirectory(newPath);
+                    InvalidateFileTree();
                     _showEmptyFolders.Value = true;
                     _activeDirectory = newPath;
                     _activeFile = string.Empty;
                 }
                 else
                 {
-                    File.Create(newPath).Close();
+                    using (new FileStream(newPath, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { }
+                    InvalidateFileTree();
                     LoadFileToEditor(newPath);
                 }
 
@@ -620,6 +665,9 @@ namespace ConfigurationManager
 
         private void SaveActiveFile()
         {
+            string stagedPath = null;
+            string backupPath = null;
+            bool keepBackup = false;
             try
             {
                 if (_activeFile.IsNullOrWhiteSpace() || !File.Exists(_activeFile))
@@ -640,15 +688,24 @@ namespace ConfigurationManager
                         return;
                     }
 
-                    stream.Position = 0;
-                    stream.SetLength(0);
-                    using (StreamWriter writer = new StreamWriter(stream, new UTF8Encoding(false), 1024, true))
+                    // File.Replace requires releasing or weakening FileShare.None on Windows.
+                    // Keep the existing conflict lock through staging, writing and recovery instead.
+                    using (FileStream staged = CreateSaveFile(_activeFile, ".tmp", out stagedPath))
+                    using (FileStream backup = CreateSaveFile(_activeFile, ".bak", out backupPath))
                     {
-                        writer.Write(_fileContent);
-                        writer.Flush();
-                    }
+                        using (StreamWriter writer = new StreamWriter(staged, new UTF8Encoding(false), 1024, true))
+                        {
+                            writer.Write(_fileContent);
+                            writer.Flush();
+                        }
+                        staged.Flush(true);
 
-                    stream.Flush();
+                        // Preserve bytes, including the original encoding/BOM, before touching the file.
+                        stream.Position = 0;
+                        stream.CopyTo(backup);
+                        backup.Flush(true);
+                        CommitStagedContent(stream, staged, backup, out keepBackup);
+                    }
                 }
 
                 _originalFileContent = _fileContent;
@@ -657,6 +714,78 @@ namespace ConfigurationManager
             catch (Exception e) when (e is IOException || e is UnauthorizedAccessException)
             {
                 _errorText = e.Message;
+                if (keepBackup)
+                    _errorText += Environment.NewLine + "Original file backup: " + backupPath;
+            }
+            finally
+            {
+                DeleteSaveFile(stagedPath);
+                if (!keepBackup)
+                    DeleteSaveFile(backupPath);
+            }
+        }
+
+        private static FileStream CreateSaveFile(string activeFile, string extension, out string createdPath)
+        {
+            string path = Path.Combine(Path.GetDirectoryName(activeFile), ".configmanager-save-" + Guid.NewGuid().ToString("N") + extension);
+            FileStream stream = new FileStream(path, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None);
+            // Only files successfully created by this save may be cleaned up.
+            createdPath = path;
+            return stream;
+        }
+
+        private static void CommitStagedContent(Stream destination, Stream staged, Stream backup, out bool keepBackup)
+        {
+            // Retain the durable original for any unexpected failure after writing starts too.
+            keepBackup = true;
+            try
+            {
+                CopyCompleteContent(staged, destination);
+                keepBackup = false;
+            }
+            catch (Exception writeError) when (writeError is IOException || writeError is UnauthorizedAccessException)
+            {
+                try
+                {
+                    CopyCompleteContent(backup, destination);
+                    keepBackup = false;
+                }
+                catch (Exception restoreError) when (restoreError is IOException || restoreError is UnauthorizedAccessException)
+                {
+                    throw new IOException($"Saving failed ({writeError.Message}) and restoring the original failed ({restoreError.Message}).",
+                        new AggregateException(writeError, restoreError));
+                }
+
+                throw;
+            }
+        }
+
+        private static void CopyCompleteContent(Stream source, Stream destination)
+        {
+            source.Position = 0;
+            destination.Position = 0;
+            source.CopyTo(destination);
+            // Delay truncation until all replacement bytes have been written.
+            destination.SetLength(destination.Position);
+            if (destination is FileStream file)
+                file.Flush(true);
+            else
+                destination.Flush();
+        }
+
+        private void DeleteSaveFile(string path)
+        {
+            if (path == null)
+                return;
+
+            try
+            {
+                File.Delete(path);
+            }
+            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException)
+            {
+                string message = $"Could not remove temporary save file {path}: {e.Message}";
+                _errorText = string.IsNullOrEmpty(_errorText) ? message : _errorText + Environment.NewLine + message;
             }
         }
 
