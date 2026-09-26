@@ -72,7 +72,7 @@ if (-not $ValheimGamePath)
     throw "Valheim was not found. Pass -ValheimGamePath explicitly."
 }
 
-& (Join-Path $projectRoot "RunExternalSettingsTests.ps1") -AssemblyPath $dll -BepInExPath (Join-Path $ValheimGamePath "BepInEx") -ManagedAssembliesPath (Join-Path $ValheimGamePath "valheim_Data\Managed") -SkipPluginBuild
+& (Join-Path $projectRoot "RunExternalSettingsTests.ps1") -Configuration Release -AssemblyPath $dll -BepInExPath (Join-Path $ValheimGamePath "BepInEx") -ManagedAssembliesPath (Join-Path $ValheimGamePath "valheim_Data\Managed") -SkipPluginBuild
 
 $cecilPath = Join-Path $ValheimGamePath "BepInEx\core\Mono.Cecil.dll"
 if (-not (Test-Path $cecilPath))

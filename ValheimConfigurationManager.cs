@@ -386,7 +386,7 @@ namespace ConfigurationManager
             }
         }
 
-        [HarmonyPatch(typeof(PlayerController), nameof(PlayerController.TakeInput))]
+        [HarmonyPatch(typeof(PlayerController), "TakeInput")]
         [HarmonyPriority(Priority.Last)]
         public static class PlayerController_TakeInput_PreventInput
         {
@@ -411,10 +411,16 @@ namespace ConfigurationManager
         {
             private static IEnumerable<MethodBase> TargetMethods()
             {
-                yield return AccessTools.Method(typeof(InventoryGrid), nameof(InventoryGrid.OnLeftClick));
-                yield return AccessTools.Method(typeof(InventoryGrid), nameof(InventoryGrid.OnRightClick));
-                yield return AccessTools.Method(typeof(InventoryGui), nameof(InventoryGui.OnSelectedItem));
-                yield return AccessTools.Method(typeof(InventoryGui), nameof(InventoryGui.OnRightClickItem));
+                // 1.0 separates pointer-down (selection/use) from touch click handling.
+                // Keep release callbacks running so pressed/drag state can be cleared.
+                yield return AccessTools.Method(typeof(InventoryGrid), "OnLeftDown", new[] { typeof(UIInputHandler) });
+                yield return AccessTools.Method(typeof(InventoryGrid), "OnLeftClick", new[] { typeof(UIInputHandler) });
+                yield return AccessTools.Method(typeof(InventoryGrid), "OnRightDown", new[] { typeof(UIInputHandler) });
+                // These shared callbacks also cover gamepad and touch drag/drop actions.
+                yield return AccessTools.Method(typeof(InventoryGui), "OnSelectedItem");
+                yield return AccessTools.Method(typeof(InventoryGui), "OnRightClickItem");
+                // Touch drag releases invoke this directly, bypassing Button.Press.
+                yield return AccessTools.Method(typeof(InventoryGui), "OnDropOutside", Type.EmptyTypes);
                 yield return AccessTools.Method(typeof(Toggle), nameof(Toggle.OnSubmit));
                 yield return AccessTools.Method(typeof(Toggle), nameof(Toggle.OnPointerClick));
                 yield return AccessTools.Method(typeof(Player), nameof(Player.UseHotbarItem));
@@ -488,19 +494,19 @@ namespace ConfigurationManager
             }
         }
 
-        [HarmonyPatch(typeof(FejdStartup), nameof(FejdStartup.Start))]
+        [HarmonyPatch(typeof(FejdStartup), "Start")]
         public static class FejdStartup_Start_MenuButton
         {
             public static void Postfix() => instance.SetupMenuButton();
         }
 
-        [HarmonyPatch(typeof(Menu), nameof(Menu.Start))]
+        [HarmonyPatch(typeof(Menu), "Start")]
         public static class Menu_Start_MenuButton
         {
             public static void Postfix() => instance.SetupMenuButton();
         }
 
-        [HarmonyPatch(typeof(Menu), nameof(Menu.UpdateNavigation))]
+        [HarmonyPatch(typeof(Menu), "UpdateNavigation")]
         public static class Menu_UpdateNavigation_MenuButton
         {
             public static void Postfix() => instance.SetupMenuButton();

@@ -22,7 +22,7 @@ namespace ConfigurationManager
     {
         public const string GUID = "sighsorry.ConfigManager";
         public const string pluginName = "ConfigManager";
-        public const string ModVersion = "1.0.1";
+        public const string ModVersion = "1.0.3";
         public const string Version = ModVersion;
 
         internal static ConfigurationManager instance;

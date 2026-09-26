@@ -1,3 +1,17 @@
+## 1.0.3
+* README change.
+* Update the BepInExPack dependency to 5.4.2351.
+
+## 1.0.2
+
+### Fixed
+* Restore Harmony initialization on Valheim 1.0.7 by targeting its new inventory pointer-down and touch-click handlers after `InventoryGrid.OnRightClick` was removed.
+* Block touch drag-to-drop actions that bypass ordinary button events while the settings window is open, while preserving release callbacks that clear pressed and drag state.
+
+### Maintenance
+* Build against original Valheim assemblies and validate Harmony targets, inventory guard boundaries, and menu/scaler reflection fields against client and dedicated-server metadata.
+* Run managed regression tests as Debug by default and update the BepInExPack dependency to 5.4.2350.
+
 ## 1.0.1
 
 ### Added

@@ -48,7 +48,6 @@
     <ValheimGamePath Condition="'$(ValheimGamePath)' == '' And Exists('C:\Program Files\Steam\steamapps\common\Valheim')">C:\Program Files\Steam\steamapps\common\Valheim</ValheimGamePath>
     <BepInExPath Condition="'$(BepInExPath)' == ''">$(ValheimGamePath)\BepInEx</BepInExPath>
     <ManagedAssembliesPath Condition="'$(ManagedAssembliesPath)' == ''">$(ValheimGamePath)\valheim_Data\Managed</ManagedAssembliesPath>
-    <PublicizedAssembliesPath Condition="'$(PublicizedAssembliesPath)' == ''">$(ManagedAssembliesPath)\publicized_assemblies</PublicizedAssembliesPath>
     <DeployToGame Condition="'$(DeployToGame)' == ''">false</DeployToGame>
     <GamePluginPath Condition="'$(GamePluginPath)' == ''">$(BepInExPath)\plugins</GamePluginPath>
   </PropertyGroup>
@@ -85,15 +84,15 @@
       <Private>False</Private>
     </Reference>
     <Reference Include="assembly_guiutils">
-      <HintPath>$(PublicizedAssembliesPath)\assembly_guiutils_publicized.dll</HintPath>
+      <HintPath>$(ManagedAssembliesPath)\assembly_guiutils.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="assembly_utils">
-      <HintPath>$(PublicizedAssembliesPath)\assembly_utils_publicized.dll</HintPath>
+      <HintPath>$(ManagedAssembliesPath)\assembly_utils.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="assembly_valheim">
-      <HintPath>$(PublicizedAssembliesPath)\assembly_valheim_publicized.dll</HintPath>
+      <HintPath>$(ManagedAssembliesPath)\assembly_valheim.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="BepInEx">
@@ -161,7 +160,7 @@
   <Target Name="ValidateBuildEnvironment" BeforeTargets="ResolveReferences">
     <Error Condition="'$(ValheimGamePath)' == '' Or !Exists('$(ValheimGamePath)')" Text="Valheim installation was not found. Pass /p:ValheimGamePath=&quot;path-to-Valheim&quot;." />
     <Error Condition="!Exists('$(BepInExPath)\core\BepInEx.dll')" Text="BepInEx.dll was not found under $(BepInExPath)\core." />
-    <Error Condition="!Exists('$(PublicizedAssembliesPath)\assembly_valheim_publicized.dll')" Text="Publicized Valheim assemblies were not found under $(PublicizedAssembliesPath)." />
+    <Error Condition="!Exists('$(ManagedAssembliesPath)\assembly_valheim.dll')" Text="Original Valheim assemblies were not found under $(ManagedAssembliesPath)." />
     <Error Condition="!Exists('$(ManagedAssembliesPath)\UnityEngine.CoreModule.dll')" Text="Unity managed assemblies were not found under $(ManagedAssembliesPath)." />
   </Target>
   <Target Name="DeployDebugToGame"
