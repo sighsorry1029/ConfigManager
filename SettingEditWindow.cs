@@ -80,6 +80,7 @@ namespace ConfigurationManager
         public void EditSetting(SettingEntryBase setting)
         {
             if (setting is ExternalSettingEntry external && (external.ReadOnly == true || !external.IsActive)) return;
+            if (setting is ConfigSettingEntry config && PathOfValheimanCompatibility.IsLocked(config)) return;
             if (this.setting == setting && IsOpen)
             {
                 IsOpen = false;
@@ -217,7 +218,7 @@ namespace ConfigurationManager
                     newSetting.Entry.DefaultValue,
                     newSetting.Entry.Description
                 });
-                dummyCustomDrawerConfigEntry.BoxedValue = newSetting.Entry.BoxedValue;
+                dummyCustomDrawerConfigEntry.BoxedValue = newSetting.Get();
             }
 
             if (setting.AcceptableValueRange.Key != null)
@@ -375,7 +376,21 @@ namespace ConfigurationManager
 
             GUILayout.Space(5f);
 
-            DrawSettingValue();
+            bool povLocked = setting is ConfigSettingEntry config && PathOfValheimanCompatibility.IsLocked(config);
+            var guiEnabled = GUI.enabled;
+            try
+            {
+                if (povLocked)
+                {
+                    GUI.enabled = false;
+                    GUILayout.Label(setting.Get()?.ToString() ?? string.Empty, GetLabelStyle());
+                }
+                else DrawSettingValue();
+            }
+            finally
+            {
+                if (povLocked || !Utilities.ComboBox.IsShown()) GUI.enabled = guiEnabled;
+            }
 
             if (!errorOnSetting.IsNullOrWhiteSpace())
                 GUILayout.Label(errorOnSetting, GetLabelStyle());
@@ -468,10 +483,11 @@ namespace ConfigurationManager
         {
             ExternalSettingEntry external = setting as ExternalSettingEntry;
             bool externalText = external != null && external.UsesTextEditor;
+            bool povLocked = setting is ConfigSettingEntry config && PathOfValheimanCompatibility.IsLocked(config);
             GUILayout.BeginHorizontal();
             {
                 var enabled = GUI.enabled;
-                GUI.enabled = enabled && !IsPendingValueEqualTo(setting.DefaultValue);
+                GUI.enabled = enabled && !povLocked && !IsPendingValueEqualTo(setting.DefaultValue);
                 if (externalText)
                 {
                     if (GUILayout.Button(UiText.ResetSettingText, GetButtonStyle(), GUILayout.ExpandWidth(false)))
@@ -483,7 +499,7 @@ namespace ConfigurationManager
                 GUILayout.Label(UiText.PressEscapeHintEditWindow, GetLabelStyleInfo(), GUILayout.ExpandWidth(true));
 
                 enabled = GUI.enabled;
-                GUI.enabled = enabled && !IsPendingValueEqualTo(setting.Get());
+                GUI.enabled = enabled && !povLocked && !IsPendingValueEqualTo(setting.Get());
                 if (GUILayout.Button(UiText.ApplyButtonEditWindow, GetButtonStyle(), GUILayout.ExpandWidth(false)))
                     ApplySettingValue();
 
@@ -498,6 +514,7 @@ namespace ConfigurationManager
         private void ApplySettingValue()
         {
             if (setting is ExternalSettingEntry readOnly && readOnly.ReadOnly == true) return;
+            if (setting is ConfigSettingEntry config && PathOfValheimanCompatibility.IsLocked(config)) return;
             if (setting is ExternalSettingEntry external && external.UsesTextEditor)
             {
                 // Keep the typed initial/reset value until the user actually edits

@@ -1,3 +1,13 @@
+## 1.0.4
+
+### Fixed
+* Restore Path of Valheiman's effective world-setting values and client edit locks when its ConfigManager integration was skipped because ConfigManager loaded later. Use PoV's own policy functions without modifying its DLL or configuration.
+* Recheck edit permissions for open setting editors and block writes and Reset when PoV reports a lock. Display locked values without invoking custom drawers that could write directly to configuration entries. Preserve ordinary settings and skip value/write fallback paths already handled by PoV's native patches.
+
+### Compatibility
+* Bind the optional integration once after plugin initialization and release cached delegates on shutdown. If a bound PoV callback fails, keep its settings read-only instead of allowing unchecked edits.
+* The original early type-lookup warning and the unrelated Evasion mastery-category warning may still appear. This update restores the settings integration; it does not alter PoV's startup or skill-tree data.
+
 ## 1.0.3
 * README change.
 * Update the BepInExPack dependency to 5.4.2351.

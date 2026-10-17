@@ -441,47 +441,54 @@ namespace ConfigurationManager
         {
             var contentColor = GUI.contentColor;
             var guiEnabled = GUI.enabled;
-
-            if (setting.ReadOnly == true)
-            {
-                GUI.contentColor = Palette.ReadOnlyText;
-                if (setting is ExternalSettingEntry) GUI.enabled = false;
-            }
-
-            GUILayout.BeginHorizontal(GUILayout.MaxWidth(SettingsListColumnWidth));
-
+            bool povLocked = setting is ConfigSettingEntry config && PathOfValheimanCompatibility.IsLocked(config);
             try
             {
-                DrawSettingName(setting);
-                if (setting is ExternalSettingEntry external && external.UsesTextEditor && !external.UsesInlineNumericEditor)
+                if (setting.ReadOnly == true || povLocked)
                 {
-                    GUILayout.Label(new GUIContent(external.GetPreviewText(), external.ReadOnly == true
-                            ? external.Description : "Use Edit to change and apply this value."),
-                        GetLabelStyle(), GUILayout.ExpandWidth(true));
+                    GUI.contentColor = Palette.ReadOnlyText;
+                    if (setting is ExternalSettingEntry || povLocked) GUI.enabled = false;
                 }
-                else
-                    _fieldDrawer.DrawSettingValue(setting);
-                DrawDefaultButton(setting);
+
+                GUILayout.BeginHorizontal(GUILayout.MaxWidth(SettingsListColumnWidth));
+                try
+                {
+                    DrawSettingName(setting);
+                    // A custom drawer receives ConfigEntryBase directly and can bypass SetValue.
+                    if (povLocked)
+                        GUILayout.Label(setting.Get()?.ToString() ?? string.Empty, GetLabelStyle(), GUILayout.ExpandWidth(true));
+                    else if (setting is ExternalSettingEntry external && external.UsesTextEditor && !external.UsesInlineNumericEditor)
+                    {
+                        GUILayout.Label(new GUIContent(external.GetPreviewText(), external.ReadOnly == true
+                                ? external.Description : "Use Edit to change and apply this value."),
+                            GetLabelStyle(), GUILayout.ExpandWidth(true));
+                    }
+                    else
+                        _fieldDrawer.DrawSettingValue(setting);
+                    DrawDefaultButton(setting);
+                }
+                catch (FormatException)
+                {
+                    LogInfo($"Incorrect input: {setting.PluginInfo.Name} - {setting.Category} - {setting.DispName}");
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log(LogLevel.Error, $"Failed to draw setting {setting.PluginInfo.Name} - {setting.Category} - {setting.DispName}:\n{ex}");
+                    GUILayout.Label("Failed to draw this field, check log for details.", GetLabelStyle());
+                }
+                finally
+                {
+                    GUILayout.EndHorizontal();
+                }
+
+                if (setting is ExternalSettingEntry externalSetting && !string.IsNullOrEmpty(externalSetting.ErrorText))
+                    GUILayout.Label(externalSetting.ErrorText, GetLabelStyle());
             }
-            catch (FormatException)
+            finally
             {
-                LogInfo($"Incorrect input: {setting.PluginInfo.Name} - {setting.Category} - {setting.DispName}");
+                if (povLocked || !Utilities.ComboBox.IsShown()) GUI.enabled = guiEnabled;
+                GUI.contentColor = contentColor;
             }
-            catch (Exception ex)
-            {
-                Logger.Log(LogLevel.Error, $"Failed to draw setting {setting.PluginInfo.Name} - {setting.Category} - {setting.DispName}:\n{ex}");
-                GUILayout.Label("Failed to draw this field, check log for details.", GetLabelStyle());
-            }
-
-            GUILayout.EndHorizontal();
-
-            if (setting is ExternalSettingEntry externalSetting && !string.IsNullOrEmpty(externalSetting.ErrorText))
-                GUILayout.Label(externalSetting.ErrorText, GetLabelStyle());
-
-            if (!Utilities.ComboBox.IsShown())
-                GUI.enabled = guiEnabled;
-
-            GUI.contentColor = contentColor;
         }
 
         private void DrawSettingName(SettingEntryBase setting)

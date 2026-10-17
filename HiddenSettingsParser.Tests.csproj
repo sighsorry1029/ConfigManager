@@ -29,12 +29,14 @@
   <ItemGroup>
     <Reference Include="System" />
     <Reference Include="System.Core" />
+    <Reference Include="Microsoft.CSharp" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="HiddenSettingsParser.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="ExternalSettings.Tests.cs" />
     <Compile Include="FileEditor.Tests.cs" />
+    <Compile Include="PathOfValheimanCompatibility.Tests.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

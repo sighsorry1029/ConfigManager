@@ -56,6 +56,7 @@
     <Compile Include="ConfigOptions.cs" />
     <Compile Include="ConfigFilesEditor.cs" />
     <Compile Include="ConfigSettingEntry.cs" />
+    <Compile Include="PathOfValheimanCompatibility.cs" />
     <Compile Include="ExternalSettings.cs" />
     <Compile Include="HiddenSettingsParser.cs" />
     <Compile Include="SettingEditWindow.cs" />

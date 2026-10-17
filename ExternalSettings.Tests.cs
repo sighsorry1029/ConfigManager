@@ -66,6 +66,7 @@ namespace ConfigurationManager.Tests
                 Case("worker registration and disposal", WorkerRegistration, failures);
                 Program.RunAttributeTests(_assembly, failures);
                 FileEditorTests.Run(_assembly, failures, temporaryRoot);
+                PathOfValheimanCompatibilityTests.Run(_assembly, failures, temporaryRoot);
                 Console.WriteLine("ExternalSettings: " + _passed + " cases passed");
             }
             catch (Exception ex)

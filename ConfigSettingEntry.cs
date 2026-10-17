@@ -60,11 +60,12 @@ namespace ConfigurationManager
 
         public override object Get()
         {
-            return Entry.BoxedValue;
+            return PathOfValheimanCompatibility.TryGetValue(this, out object value) ? value : Entry.BoxedValue;
         }
 
         protected override void SetValue(object newVal)
         {
+            if (PathOfValheimanCompatibility.ShouldBlockSet(this)) return;
             Entry.BoxedValue = newVal;
         }
 

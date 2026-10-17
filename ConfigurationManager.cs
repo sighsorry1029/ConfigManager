@@ -22,7 +22,7 @@ namespace ConfigurationManager
     {
         public const string GUID = "sighsorry.ConfigManager";
         public const string pluginName = "ConfigManager";
-        public const string ModVersion = "1.0.3";
+        public const string ModVersion = "1.0.4";
         public const string Version = ModVersion;
 
         internal static ConfigurationManager instance;
@@ -152,10 +152,10 @@ namespace ConfigurationManager
 
         internal static ThemePalette Palette { get; } = ThemePalette.CreateValheim();
 
-        internal static void LogInfo(object data)
+        internal static void LogInfo(object data, bool always = false)
         {
-            if (_loggingEnabled?.Value == true)
-                instance.Logger.LogInfo(data);
+            if (always || _loggingEnabled?.Value == true)
+                instance?.Logger.LogInfo(data);
         }
 
         internal static void LogWarning(object data)
@@ -252,6 +252,7 @@ namespace ConfigurationManager
 
         void OnDestroy()
         {
+            PathOfValheimanCompatibility.Reset();
             RemoveOwnedMenuButtons();
             _configFilesEditor?.Dispose();
             _configSettingWindow?.Dispose();
@@ -265,6 +266,7 @@ namespace ConfigurationManager
 
         void Start()
         {
+            PathOfValheimanCompatibility.Initialize();
             // Use reflection to keep compatibility with unity 4.x since it doesn't have Cursor
             var tCursor = typeof(Cursor);
             _curLockState = tCursor.GetProperty("lockState", BindingFlags.Static | BindingFlags.Public);
