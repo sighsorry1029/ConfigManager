@@ -26,15 +26,432 @@ namespace ConfigurationManager
         private static readonly Dictionary<SettingEntryBase, ColorCacheEntry> ColorCache = new Dictionary<SettingEntryBase, ColorCacheEntry>();
         private static readonly Dictionary<ExternalSettingEntry, ExternalEnumCache> ExternalEnumCaches =
             new Dictionary<ExternalSettingEntry, ExternalEnumCache>();
+        private static readonly Dictionary<KeyboardShortcut, GUIContent> ShortcutContents = new Dictionary<KeyboardShortcut, GUIContent>();
 
         private static ConfigurationManager _instance;
 
         private static SettingEntryBase _currentKeyboardShortcutToSet;
+        private static SettingEntryBase _capturedShortcutSetting;
+        private static readonly ShortcutCaptureState MainShortcutCapture = new ShortcutCaptureState();
+        private static readonly List<KeyCode> ShortcutPressed = new List<KeyCode>();
+        private static readonly List<KeyCode> ShortcutHeld = new List<KeyCode>();
+        private static readonly List<KeyCode> ShortcutReleased = new List<KeyCode>();
+        private static bool _shortcutCaptureDrawn;
         private static ExternalNumericEditor _activeExternalNumber;
         private static string _cancelledNumericControl;
         private static Rect _activeNumericScreenRect;
         private static bool _activeNumericRectValid;
         private static bool _activeNumericDrawn;
+
+        // Keep input sampling separate from IMGUI so Layout/Repaint cannot record
+        // the same press twice. Only newly recorded shortcuts use this policy.
+        internal sealed class ShortcutCaptureState
+        {
+            private KeyCode mainKey;
+            private readonly List<KeyCode> modifiers = new List<KeyCode>();
+            private bool waitingForRelease;
+
+            internal bool IsActive { get; private set; }
+            internal bool NeedsRetry { get; private set; }
+            internal int LastProcessedFrame { get; private set; } = int.MinValue;
+
+            internal void Begin(int frame)
+            {
+                Cancel();
+                IsActive = true;
+                LastProcessedFrame = frame; // Ignore input from the click that armed recording.
+            }
+
+            internal void Cancel()
+            {
+                IsActive = false;
+                NeedsRetry = false;
+                waitingForRelease = false;
+                mainKey = KeyCode.None;
+                modifiers.Clear();
+            }
+
+            private static bool IsSupported(KeyCode key) => key != KeyCode.None && key != KeyCode.Mouse0;
+
+            private static bool HasSupportedKey(IList<KeyCode> keys)
+            {
+                for (int index = 0; index < keys.Count; index++)
+                    if (IsSupported(keys[index])) return true;
+                return false;
+            }
+
+            internal bool ProcessFrame(int frame, IList<KeyCode> pressed, IList<KeyCode> held,
+                IList<KeyCode> released, out KeyboardShortcut shortcut)
+            {
+                shortcut = KeyboardShortcut.Empty;
+                if (!IsActive || frame <= LastProcessedFrame) return false;
+                LastProcessedFrame = frame;
+
+                if (waitingForRelease)
+                {
+                    if (!HasSupportedKey(held) && !HasSupportedKey(pressed)) waitingForRelease = false;
+                    return false;
+                }
+
+                KeyCode newlyPressed = KeyCode.None;
+                bool ambiguous = false;
+                for (int index = 0; index < pressed.Count; index++)
+                {
+                    KeyCode key = pressed[index];
+                    if (!IsSupported(key)) continue;
+                    if (newlyPressed != KeyCode.None && newlyPressed != key) ambiguous = true;
+                    newlyPressed = key;
+                }
+                if (newlyPressed != KeyCode.None)
+                {
+                    // Boolean polling cannot tell whether another key was released
+                    // before or after this press within the same frame.
+                    for (int index = 0; index < released.Count; index++)
+                        if (IsSupported(released[index]) && released[index] != newlyPressed)
+                            ambiguous = true;
+                }
+                if (ambiguous)
+                {
+                    mainKey = KeyCode.None;
+                    modifiers.Clear();
+                    NeedsRetry = true;
+                    waitingForRelease = HasSupportedKey(held);
+                    return false;
+                }
+
+                if (newlyPressed != KeyCode.None)
+                {
+                    mainKey = newlyPressed;
+                    modifiers.Clear();
+                    for (int index = 0; index < held.Count; index++)
+                    {
+                        KeyCode key = held[index];
+                        if (IsSupported(key) && key != mainKey && !modifiers.Contains(key)) modifiers.Add(key);
+                    }
+                    NeedsRetry = false;
+                }
+
+                if (mainKey == KeyCode.None) return false;
+                for (int index = 0; index < released.Count; index++)
+                {
+                    KeyCode key = released[index];
+                    if (key != mainKey && !modifiers.Contains(key)) continue;
+                    shortcut = new KeyboardShortcut(mainKey, modifiers.ToArray());
+                    Cancel(); // Detach state before the caller invokes a setting callback.
+                    return true;
+                }
+                return false;
+            }
+        }
+
+        internal static bool PollShortcutCapture(ShortcutCaptureState capture, out KeyboardShortcut shortcut)
+        {
+            shortcut = KeyboardShortcut.Empty;
+            int frame = Time.frameCount;
+            if (!capture.IsActive || frame <= capture.LastProcessedFrame) return false;
+            var input = UnityInput.Current;
+            _keysToCheck ??= input.SupportedKeyCodes.Except(new[] { KeyCode.Mouse0, KeyCode.None }).ToArray();
+            ShortcutPressed.Clear();
+            ShortcutHeld.Clear();
+            ShortcutReleased.Clear();
+            foreach (KeyCode key in _keysToCheck)
+            {
+                if (input.GetKeyDown(key)) ShortcutPressed.Add(key);
+                if (input.GetKey(key)) ShortcutHeld.Add(key);
+                if (input.GetKeyUp(key)) ShortcutReleased.Add(key);
+            }
+            return capture.ProcessFrame(frame, ShortcutPressed, ShortcutHeld, ShortcutReleased, out shortcut);
+        }
+
+        internal static bool HasBuiltInKeyRecorder(SettingEntryBase setting)
+        {
+            if (setting == null || (setting.SettingType != typeof(KeyCode) && setting.SettingType != typeof(KeyboardShortcut)))
+                return false;
+            return (setting.CustomDrawer == null && setting.CustomHotkeyDrawer == null) || IsSettingFailedToCustomDraw(setting);
+        }
+
+        internal static bool CanCaptureShortcut(SettingEntryBase setting)
+        {
+            if (!HasBuiltInKeyRecorder(setting) || setting.SettingType != typeof(KeyboardShortcut) || setting.ReadOnly == true)
+                return false;
+            if (setting is ExternalSettingEntry external && !external.IsActive) return false;
+            return !(setting is ConfigSettingEntry config) || !PathOfValheimanCompatibility.IsLocked(config);
+        }
+
+        internal static bool IsRecordingKeyboardShortcut => MainShortcutCapture.IsActive;
+
+        internal static void BeginKeyboardShortcutCapture(SettingEntryBase setting, int frame)
+        {
+            if (!CanCaptureShortcut(setting)) return;
+            _instance?.CancelBuiltInKeyRecordings();
+            CancelBuiltInKeyRecording();
+            _currentKeyboardShortcutToSet = setting;
+            _capturedShortcutSetting = setting;
+            MainShortcutCapture.Begin(frame);
+            _shortcutCaptureDrawn = true;
+        }
+
+        internal static void BeginKeyCodeCapture(SettingEntryBase setting)
+        {
+            if (!HasBuiltInKeyRecorder(setting) || setting.SettingType != typeof(KeyCode)) return;
+            _instance?.CancelBuiltInKeyRecordings();
+            CancelBuiltInKeyRecording();
+            _currentKeyboardShortcutToSet = setting;
+        }
+
+        // A new built-in recording replaces another built-in recorder in either window.
+        // CustomHotkeyDrawer owns its ref state and is deliberately left alone.
+        internal static void CancelBuiltInKeyRecording()
+        {
+            CancelKeyboardShortcutCapture();
+            if (HasBuiltInKeyRecorder(_currentKeyboardShortcutToSet)) _currentKeyboardShortcutToSet = null;
+        }
+
+        internal static void CancelKeyboardShortcutCapture()
+        {
+            if (ReferenceEquals(_currentKeyboardShortcutToSet, _capturedShortcutSetting))
+                _currentKeyboardShortcutToSet = null;
+            _capturedShortcutSetting = null;
+            MainShortcutCapture.Cancel();
+            _shortcutCaptureDrawn = false;
+        }
+
+        internal static void UpdateKeyboardShortcutCapture()
+        {
+            if (!MainShortcutCapture.IsActive) return;
+            SettingEntryBase setting = _capturedShortcutSetting;
+            if (!ReferenceEquals(_currentKeyboardShortcutToSet, setting) || !CanCaptureShortcut(setting))
+            {
+                CancelKeyboardShortcutCapture();
+                return;
+            }
+            if (!PollShortcutCapture(MainShortcutCapture, out KeyboardShortcut shortcut)) return;
+            CompleteKeyboardShortcutCapture(shortcut);
+        }
+
+        internal static void CompleteKeyboardShortcutCapture(KeyboardShortcut shortcut)
+        {
+            SettingEntryBase setting = _capturedShortcutSetting;
+            bool canWrite = ReferenceEquals(_currentKeyboardShortcutToSet, setting) && CanCaptureShortcut(setting);
+            CancelKeyboardShortcutCapture();
+            if (!canWrite) return;
+            // Keep the existing read-only, PoV and owner setter boundary.
+            try { setting.Set(shortcut); }
+            catch (Exception ex) { LogWarning("Could not record shortcut for " + setting.SettingID + ": " + ex); }
+        }
+
+        internal static void BeginKeyboardShortcutGUI() => _shortcutCaptureDrawn = false;
+
+        internal static void FinishUndrawnKeyboardShortcutCapture()
+        {
+            if (MainShortcutCapture.IsActive && !_shortcutCaptureDrawn) CancelKeyboardShortcutCapture();
+        }
+
+        // General ConfigEntry ranges clamp on submission. ExternalNumericEditor keeps its
+        // separate owner-validation and error-retention policy.
+        internal sealed class RangeTextEditor
+        {
+            private static bool windowMouseDown;
+            private static Vector2 windowMouseScreenPosition;
+            private static int windowEventRevision;
+
+            internal static void BeginWindowEvent()
+            {
+                Event current = Event.current;
+                ++windowEventRevision;
+                windowMouseDown = current != null && current.type != EventType.Layout &&
+                    (current.rawType == EventType.MouseDown || current.type == EventType.MouseDown);
+                if (windowMouseDown)
+                    windowMouseScreenPosition = GUIUtility.GUIToScreenPoint(current.mousePosition);
+            }
+
+            internal static void EndWindowEvent() => windowMouseDown = false;
+
+            private readonly string controlName;
+            private bool editing;
+            private bool selectAllPending;
+            private bool hasFieldRect;
+            private int lastDrawnWindowEvent = -1;
+            private Rect fieldScreenRect;
+            private string text;
+            private string originalText;
+
+            internal RangeTextEditor(string name) => controlName = name;
+            internal string DisplayText(string fallback) => editing ? text : fallback;
+            internal bool IsEditing => editing;
+            internal bool WasDrawnInCurrentWindowEvent => lastDrawnWindowEvent == windowEventRevision;
+
+            private void ReleaseFocusIfOwned()
+            {
+                if (Event.current != null && GUI.GetNameOfFocusedControl() == controlName)
+                    GUI.FocusControl(null);
+            }
+
+            internal void Reset(bool releaseFocus = false)
+            {
+                if (releaseFocus) ReleaseFocusIfOwned();
+                editing = false;
+                selectAllPending = false;
+                hasFieldRect = false;
+                text = null;
+                originalText = null;
+            }
+
+            private bool Finish(out string committed, bool releaseFocus)
+            {
+                // Merely focusing a high-precision value must not round or save it.
+                bool changed = editing && !string.Equals(text, originalText, StringComparison.Ordinal);
+                committed = changed ? text : null;
+                Reset(releaseFocus);
+                return changed;
+            }
+
+            internal bool FinishIfUndrawn(out string committed)
+            {
+                if (!editing || WasDrawnInCurrentWindowEvent)
+                {
+                    committed = null;
+                    return false;
+                }
+                return Finish(out committed, releaseFocus: true);
+            }
+
+            // Window hotkeys/disable can run outside OnGUI.
+            internal bool FinishOnWindowClose(out string committed) => Finish(out committed, releaseFocus: false);
+
+            internal bool Draw(string actual, GUIStyle style, float width, out string committed)
+            {
+                lastDrawnWindowEvent = windowEventRevision;
+                bool focusedBefore = GUI.GetNameOfFocusedControl() == controlName;
+                bool enter = editing && focusedBefore && Event.current.type == EventType.KeyDown &&
+                    (Event.current.keyCode == KeyCode.Return || Event.current.keyCode == KeyCode.KeypadEnter);
+                bool clickedOutside = editing && hasFieldRect && windowMouseDown &&
+                    !fieldScreenRect.Contains(windowMouseScreenPosition);
+
+                GUI.SetNextControlName(controlName);
+                string typed = GUILayout.TextField(DisplayText(actual), style, GUILayout.Width(width));
+                bool focused = GUI.GetNameOfFocusedControl() == controlName;
+                if (Event.current.type == EventType.Repaint)
+                {
+                    Rect fieldRect = GUILayoutUtility.GetLastRect();
+                    Vector2 minimum = GUIUtility.GUIToScreenPoint(fieldRect.min);
+                    Vector2 maximum = GUIUtility.GUIToScreenPoint(fieldRect.max);
+                    fieldScreenRect = Rect.MinMaxRect(minimum.x, minimum.y, maximum.x, maximum.y);
+                    hasFieldRect = true;
+                }
+                if (focused && !editing)
+                {
+                    editing = true;
+                    originalText = actual;
+                    selectAllPending = true;
+                }
+                if (editing) text = typed;
+                if (selectAllPending && focused && Event.current.type == EventType.Repaint)
+                {
+                    TextEditor editor = (TextEditor)GUIUtility.GetStateObject(typeof(TextEditor), GUIUtility.keyboardControl);
+                    editor.SelectAll();
+                    selectAllPending = false;
+                }
+                if (editing && (enter || !focused || clickedOutside))
+                    return Finish(out committed, releaseFocus: true);
+
+                committed = null;
+                return false;
+            }
+        }
+
+        private static readonly Dictionary<SettingEntryBase, RangeTextEditor> RangeTextEditors = new Dictionary<SettingEntryBase, RangeTextEditor>();
+        private static readonly HashSet<SettingEntryBase> ActiveRangeTextEditors = new HashSet<SettingEntryBase>();
+        private static readonly List<SettingEntryBase> RangeEditorsToFinish = new List<SettingEntryBase>();
+        private static readonly List<KeyValuePair<SettingEntryBase, string>> PendingRangeValues = new List<KeyValuePair<SettingEntryBase, string>>();
+        private static int nextRangeTextId;
+        private static bool finishingRangeTextEditors;
+
+        private static RangeTextEditor GetRangeTextEditor(SettingEntryBase setting)
+        {
+            if (!RangeTextEditors.TryGetValue(setting, out RangeTextEditor editor))
+                RangeTextEditors.Add(setting, editor = new RangeTextEditor("CM_Range_" + ++nextRangeTextId));
+            return editor;
+        }
+
+        internal static void CancelRangeTextEdit(SettingEntryBase setting)
+        {
+            if (RangeTextEditors.TryGetValue(setting, out RangeTextEditor editor))
+                editor.Reset(releaseFocus: true);
+            ActiveRangeTextEditors.Remove(setting);
+        }
+
+        private static void ApplyPendingRangeText(SettingEntryBase setting, string text)
+        {
+            if (text == null || setting.ReadOnly == true || setting.AcceptableValueRange.Key == null)
+                return;
+            try
+            {
+                float min = (float)Convert.ToDouble(setting.AcceptableValueRange.Key, CultureInfo.InvariantCulture);
+                float max = (float)Convert.ToDouble(setting.AcceptableValueRange.Value, CultureInfo.InvariantCulture);
+                if (TryParseRangeText(text, min, max, setting.SettingType, out object parsed) && !Equals(parsed, setting.Get()))
+                    setting.Set(parsed); // Preserve PoV, read-only and external owner write checks.
+            }
+            catch (Exception ex)
+            {
+                LogWarning("Could not apply pending range value for " + setting.SettingID + ": " + ex);
+            }
+        }
+
+        internal static void FinishUndrawnRangeTextEditors() => FinishRangeTextEditors(onlyUndrawn: true);
+        internal static void FinishPendingRangeTextEditors() => FinishRangeTextEditors(onlyUndrawn: false);
+
+        private static void FinishRangeTextEditors(bool onlyUndrawn)
+        {
+            if (finishingRangeTextEditors || ActiveRangeTextEditors.Count == 0) return;
+            finishingRangeTextEditors = true;
+            try
+            {
+                RangeEditorsToFinish.Clear();
+                PendingRangeValues.Clear();
+                foreach (SettingEntryBase setting in ActiveRangeTextEditors)
+                    if (!RangeTextEditors.TryGetValue(setting, out RangeTextEditor editor) || !editor.IsEditing ||
+                        !onlyUndrawn || !editor.WasDrawnInCurrentWindowEvent)
+                        RangeEditorsToFinish.Add(setting);
+
+                // Detach all state before invoking setters: a setting callback may rebuild
+                // the list and clear these caches while a submission is in progress.
+                foreach (SettingEntryBase setting in RangeEditorsToFinish)
+                {
+                    if (RangeTextEditors.TryGetValue(setting, out RangeTextEditor editor))
+                    {
+                        string text;
+                        bool changed = onlyUndrawn ? editor.FinishIfUndrawn(out text) : editor.FinishOnWindowClose(out text);
+                        if (changed) PendingRangeValues.Add(new KeyValuePair<SettingEntryBase, string>(setting, text));
+                    }
+                    ActiveRangeTextEditors.Remove(setting);
+                }
+                foreach (var pending in PendingRangeValues) ApplyPendingRangeText(pending.Key, pending.Value);
+            }
+            finally
+            {
+                RangeEditorsToFinish.Clear();
+                PendingRangeValues.Clear();
+                finishingRangeTextEditors = false;
+            }
+        }
+
+        internal static bool TryParseRangeText(string text, float minimum, float maximum, Type settingType, out object value)
+        {
+            value = null;
+            if (!float.TryParse(text?.Replace(',', '.'), NumberStyles.Float, CultureInfo.InvariantCulture, out float number) ||
+                float.IsNaN(number) || float.IsInfinity(number)) return false;
+            try
+            {
+                float rounded = Utilities.Utils.RoundWithPrecision(Mathf.Clamp(number, minimum, maximum), NumericPrecision);
+                if (float.IsNaN(rounded) || float.IsInfinity(rounded)) return false;
+                value = Convert.ChangeType(rounded, settingType, CultureInfo.InvariantCulture);
+                return true;
+            }
+            catch (FormatException) { return false; }
+            catch (OverflowException) { return false; }
+            catch (InvalidCastException) { return false; }
+        }
 
         public static bool SettingKeyboardShortcut => _currentKeyboardShortcutToSet != null;
 
@@ -90,6 +507,8 @@ namespace ConfigurationManager
 
         public bool DrawCustomField(SettingEntryBase setting)
         {
+            if (setting.CustomDrawer == null && setting.CustomHotkeyDrawer == null)
+                return false;
             if (IsSettingFailedToCustomDraw(setting))
                 return false;
 
@@ -158,6 +577,11 @@ namespace ConfigurationManager
 
         public static void ClearCache()
         {
+            CancelKeyboardShortcutCapture();
+            FinishPendingRangeTextEditors();
+            RangeTextEditors.Clear();
+            ActiveRangeTextEditors.Clear();
+            ShortcutContents.Clear();
             FinishExternalNumericEdit();
             ClearComboboxCache();
             _currentKeyboardShortcutToSet = null;
@@ -525,8 +949,10 @@ namespace ConfigurationManager
 
                 if (Math.Abs(result - converted) >= Mathf.Abs(rightValue - leftValue) / Math.Pow(10, NumericPrecision + 2))
                 {
+                    CancelRangeTextEdit(setting);
                     var newValue = Convert.ChangeType(Utilities.Utils.RoundWithPrecision(result, NumericPrecision), setting.SettingType, CultureInfo.InvariantCulture);
                     setting.Set(newValue);
+                    value = setting.Get();
                 }
 
                 if (setting.ShowRangeAsPercent == true)
@@ -535,13 +961,13 @@ namespace ConfigurationManager
                 }
                 else
                 {
-                    var strVal = Convert.ToString(value, CultureInfo.InvariantCulture).AppendZeroIfFloat(setting.SettingType);
-                    var strResult = GUILayout.TextField(strVal, GetTextStyle(setting), GUILayout.Width(50));
-                    if (strResult != strVal && Utilities.Utils.TryParseFloat(strResult, out float resultVal))
-                    {
-                        var clampedResultVal = Mathf.Clamp(resultVal, leftValue, rightValue);
-                        setting.Set(Convert.ChangeType(Utilities.Utils.RoundWithPrecision(clampedResultVal, NumericPrecision), setting.SettingType));
-                    }
+                    // Preserve the exact displayed source until a changed edit is committed.
+                    string strVal = Convert.ToString(value, CultureInfo.InvariantCulture);
+                    RangeTextEditor editor = GetRangeTextEditor(setting);
+                    if (editor.Draw(strVal, GetTextStyle(setting), 50f, out string text))
+                        ApplyPendingRangeText(setting, text);
+                    if (editor.IsEditing) ActiveRangeTextEditors.Add(setting);
+                    else ActiveRangeTextEditors.Remove(setting);
                 }
             }
             finally
@@ -632,7 +1058,7 @@ namespace ConfigurationManager
         {
             if (ReferenceEquals(_currentKeyboardShortcutToSet, setting))
             {
-                GUILayout.Label(UiText.ShortcutKeysText, GetLabelStyle(), GUILayout.ExpandWidth(true));
+                GUILayout.Label(UiText.SingleKeyCaptureText, GetLabelStyle(), GUILayout.ExpandWidth(true));
                 GUIUtility.keyboardControl = -1;
 
                 var input = UnityInput.Current;
@@ -656,43 +1082,46 @@ namespace ConfigurationManager
                 DrawComboboxField(setting, acceptableValues, _instance.currentWindowRect.yMax);
 
                 if (GUILayout.Button(new GUIContent(UiText.ShortcutKeyText), GetButtonStyle(), GUILayout.ExpandWidth(false)))
-                    _currentKeyboardShortcutToSet = setting;
+                    BeginKeyCodeCapture(setting);
             }
         }
 
         private static void DrawKeyboardShortcut(SettingEntryBase setting)
         {
-            if (ReferenceEquals(_currentKeyboardShortcutToSet, setting))
+            if (MainShortcutCapture.IsActive && ReferenceEquals(_capturedShortcutSetting, setting))
             {
-                GUILayout.Label(UiText.ShortcutKeysText, GetButtonStyle(), GUILayout.ExpandWidth(true));
+                _shortcutCaptureDrawn = true;
+                GUILayout.Label(MainShortcutCapture.NeedsRetry ? UiText.ShortcutRetryText : UiText.ShortcutKeysText,
+                    GetLabelStyleSettingName(), GUILayout.ExpandWidth(true));
                 GUIUtility.keyboardControl = -1;
 
-                var input = UnityInput.Current;
-                if (_keysToCheck == null) _keysToCheck = input.SupportedKeyCodes.Except(new[] { KeyCode.Mouse0, KeyCode.None }).ToArray();
-                foreach (var key in _keysToCheck)
-                {
-                    if (input.GetKeyUp(key))
-                    {
-                        setting.Set(new KeyboardShortcut(key, _keysToCheck.Where(input.GetKey).ToArray()));
-                        _currentKeyboardShortcutToSet = null;
-                        break;
-                    }
-                }
-
                 if (GUILayout.Button(UiText.CancelText, GetButtonStyle(), GUILayout.ExpandWidth(false)))
-                    _currentKeyboardShortcutToSet = null;
+                    CancelKeyboardShortcutCapture();
             }
             else
             {
-                if (GUILayout.Button(setting.Get().ToString(), GetButtonStyle(setting), GUILayout.ExpandWidth(true)))
-                    _currentKeyboardShortcutToSet = setting;
+                KeyboardShortcut shortcut = (KeyboardShortcut)setting.Get();
+                if (GUILayout.Button(GetKeyboardShortcutContent(shortcut), GetButtonStyle(setting), GUILayout.ExpandWidth(true)) &&
+                    CanCaptureShortcut(setting))
+                    BeginKeyboardShortcutCapture(setting, Time.frameCount);
 
                 if (GUILayout.Button(UiText.ClearText, GetButtonStyle(), GUILayout.ExpandWidth(false)))
                 {
+                    CancelKeyboardShortcutCapture();
                     setting.Set(KeyboardShortcut.Empty);
                     _currentKeyboardShortcutToSet = null;
                 }
             }
+        }
+
+        internal static GUIContent GetKeyboardShortcutContent(KeyboardShortcut shortcut)
+        {
+            if (!ShortcutContents.TryGetValue(shortcut, out GUIContent content))
+            {
+                content = new GUIContent(FormatKeyboardShortcutLabel(shortcut));
+                ShortcutContents.Add(shortcut, content);
+            }
+            return content;
         }
 
         private static void DrawVector2(SettingEntryBase obj)

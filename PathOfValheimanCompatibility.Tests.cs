@@ -245,6 +245,9 @@ namespace ConfigurationManager.Tests
         {
             // Bypass Unity-dependent sizing; exercise the real managed open/apply paths.
             object window = FormatterServices.GetUninitializedObject(_assembly.GetType("ConfigurationManager.SettingEditWindow", true));
+            Field(window, "rangeTextEditor", Activator.CreateInstance(
+                _assembly.GetType("ConfigurationManager.SettingFieldDrawer+RangeTextEditor", true),
+                BindingFlags.Instance | BindingFlags.NonPublic, null, new object[] { "test-range" }, null));
             Field(window, "setting", entry);
             Field(window, "separatedString", new List<string>());
             Field(window, "separatedStringDefault", new List<string>());

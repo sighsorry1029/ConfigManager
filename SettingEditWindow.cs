@@ -17,12 +17,18 @@ namespace ConfigurationManager
     internal class SettingEditWindow
     {
         private Rect _windowRect = new Rect(_windowPositionEditSetting.Value, _windowSizeEditSetting.Value);
+        private bool _windowGeometryDirty;
+        private bool _windowGeometrySaveFailed;
+        private Vector2? _pendingWindowSize;
 
         private const int WindowId = -6800;
         private const string NewItemFieldControlName = "StringListNewItemField";
         private SettingEntryBase setting;
 
         private static SettingEntryBase _currentKeyboardShortcutToSet;
+        private SettingFieldDrawer.ShortcutCaptureState _shortcutCapture;
+        private SettingEntryBase _capturedShortcutSetting;
+        private bool _shortcutCaptureDrawn;
         public Dictionary<Type, Action> SettingDrawHandlers { get; }
 
         private static IEnumerable<KeyCode> _keysToCheck;
@@ -41,6 +47,8 @@ namespace ConfigurationManager
         private string errorText;
 
         private object valueToSet;
+        private readonly SettingFieldDrawer.RangeTextEditor rangeTextEditor =
+            new SettingFieldDrawer.RangeTextEditor("CM_Range_Edit");
 
         private string errorOnSetting;
         private string _externalText;
@@ -81,6 +89,8 @@ namespace ConfigurationManager
         {
             if (setting is ExternalSettingEntry external && (external.ReadOnly == true || !external.IsActive)) return;
             if (setting is ConfigSettingEntry config && PathOfValheimanCompatibility.IsLocked(config)) return;
+            SettingFieldDrawer.CancelKeyboardShortcutCapture();
+            CancelKeyboardShortcutCapture();
             if (this.setting == setting && IsOpen)
             {
                 IsOpen = false;
@@ -100,8 +110,32 @@ namespace ConfigurationManager
             get => _isOpen;
             set
             {
+                if (_isOpen && !value) FlushWindowGeometry();
                 _isOpen = value;
-                if (!value) ClearCache();
+                if (!value)
+                {
+                    ClearCache();
+                    _currentKeyboardShortcutToSet = null;
+                }
+            }
+        }
+
+        internal void ResetWindowGeometry()
+        {
+            _windowRect = new Rect(_windowPositionEditSetting.Value, _windowSizeEditSetting.Value);
+            _windowGeometryDirty = false;
+            _windowGeometrySaveFailed = false;
+            _pendingWindowSize = null;
+        }
+
+        internal void FlushWindowGeometry()
+        {
+            if (!_windowGeometryDirty) return;
+            try { SaveCurrentSizeAndPosition(); }
+            catch (Exception ex)
+            {
+                _windowGeometrySaveFailed = true;
+                LogWarning("Could not save setting editor geometry: " + ex.Message);
             }
         }
 
@@ -129,17 +163,29 @@ namespace ConfigurationManager
             if (!IsOpen)
                 return;
 
-            _windowRect.size = _windowSizeEditSetting.Value;
-            _windowRect.position = _windowPositionEditSetting.Value;
+            if (!_windowGeometryDirty)
+            {
+                _windowRect.size = _windowSizeEditSetting.Value;
+                _windowRect.position = _windowPositionEditSetting.Value;
+            }
 
             Color color = GUI.backgroundColor;
             GUI.backgroundColor = Palette.WindowBackground;
 
-            _windowRect = GUI.Window(WindowId, _windowRect, DrawWindow, $"{setting.PluginInfo.Name} {setting.PluginInfo.Version}", GetWindowStyle());
+            Rect drawnWindow = GUI.Window(WindowId, _windowRect, DrawWindow, $"{setting.PluginInfo.Name} {setting.PluginInfo.Version}", GetWindowStyle());
+            if (_pendingWindowSize.HasValue)
+            {
+                drawnWindow.size = _pendingWindowSize.Value;
+                _pendingWindowSize = null;
+            }
+            _windowRect = drawnWindow;
 
-            if (!UnityInput.Current.GetKeyDown(KeyCode.Mouse0) &&
-                (_windowRect.position != _windowPositionEditSetting.Value))
-                SaveCurrentSizeAndPosition();
+            if (_windowRect.position != _windowPositionEditSetting.Value)
+                _windowGeometryDirty = true;
+            bool mouseHeld = UnityInput.Current.GetMouseButton(0);
+            if (mouseHeld) _windowGeometrySaveFailed = false;
+            if (_windowGeometryDirty && !mouseHeld && !_windowGeometrySaveFailed)
+                FlushWindowGeometry();
 
             GUI.backgroundColor = color;
         }
@@ -333,12 +379,55 @@ namespace ConfigurationManager
 
         internal void SaveCurrentSizeAndPosition()
         {
-            _windowSizeEditSetting.Value = new Vector2(Mathf.Clamp(_windowRect.size.x, 200f, instance.ScreenWidth / 2), Mathf.Clamp(_windowRect.size.y, 200f, instance.ScreenHeight * 0.9f));
-            _windowPositionEditSetting.Value = new Vector2(Mathf.Clamp(_windowRect.position.x, 0f, instance.ScreenWidth - _windowSize.Value.x / 4f), Mathf.Clamp(_windowRect.position.y, 0f, instance.ScreenHeight - HeaderSize * 2));
-            instance.Config.Save();
+            var size = new Vector2(Mathf.Clamp(_windowRect.size.x, 200f, instance.ScreenWidth / 2), Mathf.Clamp(_windowRect.size.y, 200f, instance.ScreenHeight * 0.9f));
+            var position = new Vector2(Mathf.Clamp(_windowRect.position.x, 0f, instance.ScreenWidth - _windowSize.Value.x / 4f), Mathf.Clamp(_windowRect.position.y, 0f, instance.ScreenHeight - HeaderSize * 2));
+            SaveWindowConfigChanges(instance.Config, () =>
+            {
+                _windowSizeEditSetting.Value = size;
+                _windowPositionEditSetting.Value = position;
+            });
+            _windowRect = new Rect(position, size);
+            _windowGeometryDirty = false;
+            _windowGeometrySaveFailed = false;
+            _pendingWindowSize = null;
         }
 
-       private void DrawWindow(int windowID)
+        private void DrawWindow(int windowID)
+        {
+            _shortcutCaptureDrawn = false;
+            SettingFieldDrawer.RangeTextEditor.BeginWindowEvent();
+            try
+            {
+                DrawWindowContents(windowID);
+            }
+            finally
+            {
+                try { FinishUndrawnRangeText(); }
+                finally
+                {
+                    if (IsRecordingKeyboardShortcut && !_shortcutCaptureDrawn)
+                        CancelKeyboardShortcutCapture();
+                    SettingFieldDrawer.RangeTextEditor.EndWindowEvent();
+                }
+            }
+        }
+
+        private void FinishUndrawnRangeText()
+        {
+            if (rangeTextEditor.FinishIfUndrawn(out string text)) ApplyRangeText(text);
+        }
+
+        private void ApplyRangeText(string text)
+        {
+            if (setting == null || setting.ReadOnly == true || setting.AcceptableValueRange.Key == null ||
+                setting is ConfigSettingEntry config && PathOfValheimanCompatibility.IsLocked(config)) return;
+            float min = (float)Convert.ToDouble(setting.AcceptableValueRange.Key, CultureInfo.InvariantCulture);
+            float max = (float)Convert.ToDouble(setting.AcceptableValueRange.Value, CultureInfo.InvariantCulture);
+            if (SettingFieldDrawer.TryParseRangeText(text, min, max, setting.SettingType, out object parsed))
+                valueToSet = parsed;
+        }
+
+        private void DrawWindowContents(int windowID)
         {
             var backgroundColor = GUI.backgroundColor;
             GUI.backgroundColor = Palette.EntryBackground;
@@ -368,7 +457,10 @@ namespace ConfigurationManager
 
                 GUILayout.BeginHorizontal(GUILayout.ExpandHeight(false));
                 GUILayout.Label(UiText.DefaultValueDescriptionEditWindow, style, GUILayout.Width(width));
-                GUILayout.Label($"{GetValueRepresentation(setting.DefaultValue, setting.SettingType)}", GetLabelStyleInfo(), GUILayout.ExpandWidth(true));
+                GUIContent defaultContent = setting.DefaultValue is KeyboardShortcut shortcut
+                    ? SettingFieldDrawer.GetKeyboardShortcutContent(shortcut)
+                    : new GUIContent(GetValueRepresentation(setting.DefaultValue, setting.SettingType));
+                GUILayout.Label(defaultContent, GetLabelStyleInfo(), GUILayout.ExpandWidth(true));
                 GUILayout.EndHorizontal();
             }
 
@@ -383,7 +475,11 @@ namespace ConfigurationManager
                 if (povLocked)
                 {
                     GUI.enabled = false;
-                    GUILayout.Label(setting.Get()?.ToString() ?? string.Empty, GetLabelStyle());
+                    object lockedValue = setting.Get();
+                    GUIContent lockedContent = lockedValue is KeyboardShortcut lockedShortcut
+                        ? SettingFieldDrawer.GetKeyboardShortcutContent(lockedShortcut)
+                        : new GUIContent(lockedValue?.ToString() ?? string.Empty);
+                    GUILayout.Label(lockedContent, GetLabelStyle());
                 }
                 else DrawSettingValue();
             }
@@ -415,7 +511,12 @@ namespace ConfigurationManager
             _windowRect = Utilities.Utils.ResizeWindow(windowID, _windowRect, out bool sizeChanged);
 
             if (sizeChanged)
-                SaveCurrentSizeAndPosition();
+            {
+                _windowRect.size = new Vector2(Mathf.Clamp(_windowRect.width, 200f, instance.ScreenWidth / 2),
+                    Mathf.Clamp(_windowRect.height, 200f, instance.ScreenHeight * 0.9f));
+                _pendingWindowSize = _windowRect.size;
+                _windowGeometryDirty = true;
+            }
         }
 
         private void DrawLabel(string label, string value)
@@ -481,6 +582,8 @@ namespace ConfigurationManager
 
         private void DrawMenuButtons()
         {
+            // A hidden/changed drawer must not leave an older pending value behind Apply.
+            FinishUndrawnRangeText();
             ExternalSettingEntry external = setting as ExternalSettingEntry;
             bool externalText = external != null && external.UsesTextEditor;
             bool povLocked = setting is ConfigSettingEntry config && PathOfValheimanCompatibility.IsLocked(config);
@@ -515,6 +618,7 @@ namespace ConfigurationManager
         {
             if (setting is ExternalSettingEntry readOnly && readOnly.ReadOnly == true) return;
             if (setting is ConfigSettingEntry config && PathOfValheimanCompatibility.IsLocked(config)) return;
+            if (rangeTextEditor.FinishOnWindowClose(out string pendingRange)) ApplyRangeText(pendingRange);
             if (setting is ExternalSettingEntry external && external.UsesTextEditor)
             {
                 // Keep the typed initial/reset value until the user actually edits
@@ -658,6 +762,8 @@ namespace ConfigurationManager
 
         public bool DrawCustomField()
         {
+            if (setting.CustomDrawer == null && setting.CustomHotkeyDrawer == null)
+                return false;
             if (SettingFieldDrawer.IsSettingFailedToCustomDraw(setting))
             {
                 GUILayout.Label("Error when calling custom drawer function.");
@@ -748,7 +854,9 @@ namespace ConfigurationManager
 
                 if (Math.Abs(result - converted) >= Mathf.Abs(rightValue - leftValue) / Math.Pow(10, NumericPrecision + 2))
                 {
+                    rangeTextEditor.Reset(releaseFocus: true);
                     valueToSet = Convert.ChangeType(Utilities.Utils.RoundWithPrecision(result, NumericPrecision), setting.SettingType, CultureInfo.InvariantCulture);
+                    value = valueToSet;
                 }
 
                 if (setting.ShowRangeAsPercent == true)
@@ -757,13 +865,9 @@ namespace ConfigurationManager
                 }
                 else
                 {
-                    var strVal = value.ToString().AppendZeroIfFloat(setting.SettingType);
-                    var strResult = GUILayout.TextField(strVal, GetTextStyle(setting), GUILayout.Width(50));
-                    if (strResult != strVal && Utilities.Utils.TryParseFloat(strResult, out float resultVal))
-                    {
-                        var clampedResultVal = Mathf.Clamp(resultVal, leftValue, rightValue);
-                        valueToSet = Convert.ChangeType(Utilities.Utils.RoundWithPrecision(clampedResultVal, NumericPrecision), setting.SettingType);
-                    }
+                    string strVal = Convert.ToString(value, CultureInfo.InvariantCulture);
+                    if (rangeTextEditor.Draw(strVal, GetTextStyle(setting), 50f, out string text))
+                        ApplyRangeText(text);
                 }
             }
             finally
@@ -912,6 +1016,9 @@ namespace ConfigurationManager
 
         public void ClearCache()
         {
+            CancelKeyboardShortcutCapture();
+            rangeTextEditor.Reset();
+            _currentKeyboardShortcutToSet = null;
             if (_colorPreview == null) return;
             UnityEngine.Object.Destroy(_colorPreview.Tex);
             _colorPreview = null;
@@ -1092,7 +1199,7 @@ namespace ConfigurationManager
         {
             if (ReferenceEquals(_currentKeyboardShortcutToSet, setting))
             {
-                GUILayout.Label(UiText.ShortcutKeysText, GetLabelStyle(), GUILayout.ExpandWidth(true));
+                GUILayout.Label(UiText.SingleKeyCaptureText, GetLabelStyle(), GUILayout.ExpandWidth(true));
                 GUIUtility.keyboardControl = -1;
 
                 _keysToCheck ??= UnityInput.Current.SupportedKeyCodes.Except(new[] { KeyCode.Mouse0, KeyCode.None }).ToArray();
@@ -1114,39 +1221,90 @@ namespace ConfigurationManager
                 DrawEnumListField();
 
                 if (GUILayout.Button(new GUIContent(UiText.ShortcutKeyText), GetButtonStyle(), GUILayout.ExpandWidth(false)))
-                    _currentKeyboardShortcutToSet = setting;
+                    BeginKeyCodeCapture();
             }
+        }
+
+        internal bool IsRecordingKeyboardShortcut => _shortcutCapture?.IsActive == true;
+
+        internal void BeginKeyboardShortcutCapture(int frame)
+        {
+            if (!IsOpen || !SettingFieldDrawer.CanCaptureShortcut(setting)) return;
+            instance?.CancelBuiltInKeyRecordings();
+            CancelBuiltInKeyRecording();
+            _capturedShortcutSetting = setting;
+            _currentKeyboardShortcutToSet = setting;
+            _shortcutCapture ??= new SettingFieldDrawer.ShortcutCaptureState();
+            _shortcutCapture.Begin(frame);
+            _shortcutCaptureDrawn = true;
+        }
+
+        internal void BeginKeyCodeCapture()
+        {
+            if (!IsOpen || !SettingFieldDrawer.HasBuiltInKeyRecorder(setting) || setting.SettingType != typeof(KeyCode)) return;
+            instance?.CancelBuiltInKeyRecordings();
+            CancelBuiltInKeyRecording();
+            _currentKeyboardShortcutToSet = setting;
+        }
+
+        internal void CancelBuiltInKeyRecording()
+        {
+            CancelKeyboardShortcutCapture();
+            if (SettingFieldDrawer.HasBuiltInKeyRecorder(_currentKeyboardShortcutToSet)) _currentKeyboardShortcutToSet = null;
+        }
+
+        internal void CancelKeyboardShortcutCapture()
+        {
+            if (_capturedShortcutSetting != null && ReferenceEquals(_currentKeyboardShortcutToSet, _capturedShortcutSetting))
+                _currentKeyboardShortcutToSet = null;
+            _capturedShortcutSetting = null;
+            _shortcutCapture?.Cancel();
+            _shortcutCaptureDrawn = false;
+        }
+
+        internal void UpdateKeyboardShortcutCapture()
+        {
+            if (!IsRecordingKeyboardShortcut) return;
+            if (!IsOpen || !ReferenceEquals(_capturedShortcutSetting, setting) ||
+                !ReferenceEquals(_currentKeyboardShortcutToSet, setting) || !SettingFieldDrawer.CanCaptureShortcut(setting))
+            {
+                CancelKeyboardShortcutCapture();
+                return;
+            }
+            if (SettingFieldDrawer.PollShortcutCapture(_shortcutCapture, out KeyboardShortcut shortcut))
+                CompleteKeyboardShortcutCapture(shortcut);
+        }
+
+        internal void CompleteKeyboardShortcutCapture(KeyboardShortcut shortcut)
+        {
+            bool canApply = IsOpen && _capturedShortcutSetting != null &&
+                ReferenceEquals(_capturedShortcutSetting, setting) &&
+                ReferenceEquals(_currentKeyboardShortcutToSet, setting) && SettingFieldDrawer.CanCaptureShortcut(setting);
+            CancelKeyboardShortcutCapture();
+            if (canApply) valueToSet = shortcut; // Only the existing Apply action writes the setting.
         }
 
         private void DrawKeyboardShortcut()
         {
-            if (ReferenceEquals(_currentKeyboardShortcutToSet, setting))
+            if (IsRecordingKeyboardShortcut && ReferenceEquals(_capturedShortcutSetting, setting))
             {
-                GUILayout.Label(UiText.ShortcutKeysText, GetButtonStyle(), GUILayout.ExpandWidth(true));
+                _shortcutCaptureDrawn = true;
+                GUILayout.Label(_shortcutCapture?.NeedsRetry == true ? UiText.ShortcutRetryText : UiText.ShortcutKeysText,
+                    GetLabelStyleSettingName(), GUILayout.ExpandWidth(true));
                 GUIUtility.keyboardControl = -1;
 
-                var input = UnityInput.Current;
-                _keysToCheck ??= input.SupportedKeyCodes.Except(new[] { KeyCode.Mouse0, KeyCode.None }).ToArray();
-                foreach (var key in _keysToCheck)
-                {
-                    if (input.GetKeyUp(key))
-                    {
-                        valueToSet = new KeyboardShortcut(key, _keysToCheck.Where(input.GetKey).ToArray());
-                        _currentKeyboardShortcutToSet = null;
-                        break;
-                    }
-                }
-
                 if (GUILayout.Button(UiText.CancelText, GetButtonStyle(), GUILayout.ExpandWidth(false)))
-                    _currentKeyboardShortcutToSet = null;
+                    CancelKeyboardShortcutCapture();
             }
             else
             {
-                if (GUILayout.Button(valueToSet.ToString(), GetButtonStyle(setting), GUILayout.ExpandWidth(true)))
-                    _currentKeyboardShortcutToSet = setting;
+                KeyboardShortcut shortcut = (KeyboardShortcut)valueToSet;
+                if (GUILayout.Button(SettingFieldDrawer.GetKeyboardShortcutContent(shortcut), GetButtonStyle(setting), GUILayout.ExpandWidth(true)))
+                    BeginKeyboardShortcutCapture(Time.frameCount);
 
                 if (GUILayout.Button(UiText.ClearText, GetButtonStyle(), GUILayout.ExpandWidth(false)))
                 {
+                    CancelKeyboardShortcutCapture();
                     valueToSet = KeyboardShortcut.Empty;
                     _currentKeyboardShortcutToSet = null;
                 }

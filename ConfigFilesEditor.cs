@@ -39,6 +39,9 @@ namespace ConfigurationManager
         private Vector2 _textScrollPosition;
 
         private Rect _windowRect = new Rect(_windowPositionTextEditor.Value, _windowSizeTextEditor.Value);
+        private bool _windowGeometryDirty;
+        private bool _windowGeometrySaveFailed;
+        private Vector2? _pendingWindowSize;
 
         private const int WindowId = -680;
 
@@ -84,11 +87,30 @@ namespace ConfigurationManager
             get => _isOpen;
             set
             {
-                if (_isOpen != (_isOpen = value))
-                {
-                    InvalidateFileTree();
-                    UpdateWatcherState();
-                }
+                if (_isOpen == value) return;
+                if (!value) FlushWindowGeometry();
+                _isOpen = value;
+                InvalidateFileTree();
+                UpdateWatcherState();
+            }
+        }
+
+        internal void ResetWindowGeometry()
+        {
+            _windowRect = new Rect(_windowPositionTextEditor.Value, _windowSizeTextEditor.Value);
+            _windowGeometryDirty = false;
+            _windowGeometrySaveFailed = false;
+            _pendingWindowSize = null;
+        }
+
+        internal void FlushWindowGeometry()
+        {
+            if (!_windowGeometryDirty) return;
+            try { SaveCurrentSizeAndPosition(); }
+            catch (Exception ex)
+            {
+                _windowGeometrySaveFailed = true;
+                LogWarning("Could not save file editor geometry: " + ex.Message);
             }
         }
 
@@ -97,29 +119,49 @@ namespace ConfigurationManager
             if (!IsOpen)
                 return;
 
-            _windowRect.size = _windowSizeTextEditor.Value;
-            _windowRect.position = _windowPositionTextEditor.Value;
+            if (!_windowGeometryDirty)
+            {
+                _windowRect.size = _windowSizeTextEditor.Value;
+                _windowRect.position = _windowPositionTextEditor.Value;
+            }
 
             Color color = GUI.backgroundColor;
             GUI.backgroundColor = Palette.WindowBackground;
 
-            _windowRect = GUI.Window(WindowId, _windowRect, DrawWindow,
+            Rect drawnWindow = GUI.Window(WindowId, _windowRect, DrawWindow,
                 _activeFile.IsNullOrWhiteSpace()
                     ? UiText.WindowTitleTextEditor
                     : "..." + _activeFile.Replace(Path.GetDirectoryName(Paths.BepInExRootPath) ?? string.Empty, ""), GetWindowStyle());
 
-            if (!UnityInput.Current.GetKeyDown(KeyCode.Mouse0) &&
-                (_windowRect.position != _windowPositionTextEditor.Value))
-                SaveCurrentSizeAndPosition();
+            if (_pendingWindowSize.HasValue)
+            {
+                drawnWindow.size = _pendingWindowSize.Value;
+                _pendingWindowSize = null;
+            }
+            _windowRect = drawnWindow;
+            if (_windowRect.position != _windowPositionTextEditor.Value)
+                _windowGeometryDirty = true;
+            bool mouseHeld = UnityInput.Current.GetMouseButton(0);
+            if (mouseHeld) _windowGeometrySaveFailed = false;
+            if (_windowGeometryDirty && !mouseHeld && !_windowGeometrySaveFailed)
+                FlushWindowGeometry();
 
             GUI.backgroundColor = color;
         }
 
         internal void SaveCurrentSizeAndPosition()
         {
-            _windowSizeTextEditor.Value = new Vector2(Mathf.Clamp(_windowRect.size.x, 1000f / instance.ScaleFactor, instance.ScreenWidth), Mathf.Clamp(_windowRect.size.y, 600f / instance.ScaleFactor, instance.ScreenHeight));
-            _windowPositionTextEditor.Value = new Vector2(Mathf.Clamp(_windowRect.position.x, 0f, instance.ScreenWidth - _windowSize.Value.x / 4f), Mathf.Clamp(_windowRect.position.y, 0f, instance.ScreenHeight - HeaderSize * 2));
-            instance.Config.Save();
+            var size = new Vector2(Mathf.Clamp(_windowRect.size.x, 1000f / instance.ScaleFactor, instance.ScreenWidth), Mathf.Clamp(_windowRect.size.y, 600f / instance.ScaleFactor, instance.ScreenHeight));
+            var position = new Vector2(Mathf.Clamp(_windowRect.position.x, 0f, instance.ScreenWidth - _windowSize.Value.x / 4f), Mathf.Clamp(_windowRect.position.y, 0f, instance.ScreenHeight - HeaderSize * 2));
+            SaveWindowConfigChanges(instance.Config, () =>
+            {
+                _windowSizeTextEditor.Value = size;
+                _windowPositionTextEditor.Value = position;
+            });
+            _windowRect = new Rect(position, size);
+            _windowGeometryDirty = false;
+            _windowGeometrySaveFailed = false;
+            _pendingWindowSize = null;
         }
 
         private void DrawSearchBox()
@@ -231,7 +273,12 @@ namespace ConfigurationManager
             _windowRect = Utilities.Utils.ResizeWindow(windowID, _windowRect, out bool sizeChanged);
 
             if (sizeChanged)
-                SaveCurrentSizeAndPosition();
+            {
+                _windowRect.size = new Vector2(Mathf.Clamp(_windowRect.width, 1000f / instance.ScaleFactor, instance.ScreenWidth),
+                    Mathf.Clamp(_windowRect.height, 600f / instance.ScaleFactor, instance.ScreenHeight));
+                _pendingWindowSize = _windowRect.size;
+                _windowGeometryDirty = true;
+            }
         }
 
         private float GetFileListWidth() => _windowRect.width * 0.3f;
@@ -843,6 +890,7 @@ namespace ConfigurationManager
 
         public void Dispose()
         {
+            FlushWindowGeometry();
             foreach (FileSystemWatcher watcher in _watchers)
                 watcher.Dispose();
 

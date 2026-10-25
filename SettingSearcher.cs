@@ -21,56 +21,82 @@ namespace ConfigurationManager
         public static BaseUnityPlugin[] FindPlugins()
         {
             // Search for instances of BaseUnityPlugin to also find dynamically loaded plugins.
-            // Have to use FindObjectsOfType(Type) instead of FindObjectsOfType<T> because the latter is not available in some older unity versions.
             // Still look inside Chainloader.PluginInfos in case the BepInEx_Manager GameObject uses HideFlags.HideAndDontSave, which hides it from Object.Find methods.
-            return Chainloader.PluginInfos.Values.Select(x => x.Instance)
+            return Chainloader.PluginInfos.Values.Select(x => x?.Instance)
+                              .Union(UnityEngine.Object.FindObjectsByType(typeof(BaseUnityPlugin), FindObjectsInactive.Exclude, FindObjectsSortMode.None).OfType<BaseUnityPlugin>())
                               .Where(plugin => plugin != null)
-                              .Union(UnityEngine.Object.FindObjectsByType(typeof(BaseUnityPlugin), FindObjectsInactive.Exclude, FindObjectsSortMode.None).Cast<BaseUnityPlugin>())
                               .ToArray();
         }
 
         public static void CollectSettings(out IEnumerable<SettingEntryBase> results, out List<string> modsWithoutSettings)
         {
             modsWithoutSettings = new List<string>();
+            var collectedSettings = new List<SettingEntryBase>();
 
             try
             {
-                results = GetBepInExCoreConfig();
+                // Construct entries here so lazy enumeration cannot escape the error boundary.
+                collectedSettings.AddRange(GetBepInExCoreConfig().ToArray());
             }
             catch (Exception ex)
             {
-                results = Enumerable.Empty<SettingEntryBase>();
+                ConfigurationManager.LogError("Failed to collect BepInEx core settings.");
                 ConfigurationManager.LogError(ex);
             }
 
             foreach (var plugin in FindPlugins())
             {
-                var type = plugin.GetType();
-
-                var pluginInfo = plugin.Info.Metadata;
-                var pluginName = pluginInfo?.Name ?? plugin.GetType().FullName;
-
-                if (type.GetCustomAttributes(typeof(BrowsableAttribute), false).Cast<BrowsableAttribute>()
-                        .Any(x => !x.Browsable))
+                try
                 {
-                    modsWithoutSettings.Add(pluginName);
-                    continue;
+                    var type = plugin.GetType();
+                    var pluginInfo = plugin.Info?.Metadata;
+                    var pluginName = pluginInfo?.Name ?? type.FullName;
+
+                    // Dynamic loaders need not assign PluginInfo.Instance as Chainloader does.
+                    // Only require the metadata and config that collecting settings actually uses.
+                    if (pluginInfo == null || plugin.Config == null)
+                    {
+                        ConfigurationManager.LogWarning($"Skipping plugin with unavailable metadata or config: {pluginName}");
+                        continue;
+                    }
+
+                    if (type.GetCustomAttributes(typeof(BrowsableAttribute), false).Cast<BrowsableAttribute>()
+                            .Any(x => !x.Browsable))
+                    {
+                        modsWithoutSettings.Add(pluginName);
+                        continue;
+                    }
+
+                    var detected = GetPluginConfig(plugin).ToList();
+                    detected.RemoveAll(x => x == null || x.Browsable == false || x.PluginInfo == null);
+
+                    if (detected.Count == 0)
+                        modsWithoutSettings.Add(pluginName);
+                    else
+                        collectedSettings.AddRange(detected);
                 }
-
-                var detected = new List<SettingEntryBase>();
-
-                detected.AddRange(GetPluginConfig(plugin));
-
-                detected.RemoveAll(x => x.Browsable == false);
-
-                if (detected.Count == 0)
-                    modsWithoutSettings.Add(pluginName);
-
-                if (detected.Count > 0)
-                    results = results.Concat(detected);
+                catch (Exception ex)
+                {
+                    // A failed entry or partially initialized plugin must not hide other plugins.
+                    ConfigurationManager.LogError($"Failed to collect settings of plugin: {GetPluginNameSafe(plugin)}. The plugin will be skipped.");
+                    ConfigurationManager.LogError(ex);
+                }
             }
 
-            results = results.Concat(ExternalSettingsRegistry.Snapshot());
+            collectedSettings.AddRange(ExternalSettingsRegistry.Snapshot());
+            results = collectedSettings;
+        }
+
+        private static string GetPluginNameSafe(BaseUnityPlugin plugin)
+        {
+            try
+            {
+                return plugin?.Info?.Metadata?.Name ?? plugin?.GetType().FullName ?? "Unknown plugin";
+            }
+            catch
+            {
+                return plugin?.GetType().FullName ?? "Unknown plugin";
+            }
         }
 
         /// <summary>
@@ -82,6 +108,7 @@ namespace ConfigurationManager
             if (coreConfigProp == null) throw new ArgumentNullException(nameof(coreConfigProp));
 
             var coreConfig = (ConfigFile)coreConfigProp.GetValue(null, null);
+            if (coreConfig == null) throw new InvalidOperationException("BepInEx core config is not available.");
             var bepinMeta = new BepInPlugin("BepInEx", "BepInEx", typeof(Chainloader).Assembly.GetName().Version.ToString());
 
             return coreConfig.Select(kvp => (SettingEntryBase)new ConfigSettingEntry(kvp.Value, null) { IsAdvanced = true, PluginInfo = bepinMeta });

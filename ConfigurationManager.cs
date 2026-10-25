@@ -22,7 +22,7 @@ namespace ConfigurationManager
     {
         public const string GUID = "sighsorry.ConfigManager";
         public const string pluginName = "ConfigManager";
-        public const string ModVersion = "1.0.4";
+        public const string ModVersion = "1.0.5";
         public const string Version = ModVersion;
 
         internal static ConfigurationManager instance;
@@ -250,8 +250,55 @@ namespace ConfigurationManager
         private Vector2 GetDefaultEditSettingWindowSize() => new Vector2(500f, 500f);
         private Vector2 GetDefaultEditSettingWindowPosition() => new Vector2(GetDefaultManagerWindowPosition().x + GetDefaultManagerWindowSize().x + 10f, GetDefaultManagerWindowPosition().y + (GetDefaultManagerWindowSize().y - GetDefaultEditSettingWindowSize().y) / 2);
 
+        // Display order only; keep the shortcut's trigger and BepInEx serialization intact.
+        internal static string FormatKeyboardShortcutLabel(KeyboardShortcut shortcut)
+        {
+            if (shortcut.MainKey == KeyCode.None)
+                return shortcut.ToString();
+
+            string held = string.Join(" + ", shortcut.Modifiers);
+            return held.Length == 0 ? shortcut.ToString() : held + " + " + shortcut.MainKey;
+        }
+
+        internal static void SaveWindowConfigChanges(ConfigFile config, Action applyChanges)
+        {
+            bool saveOnConfigSet = config.SaveOnConfigSet;
+            try
+            {
+                config.SaveOnConfigSet = false;
+                applyChanges();
+            }
+            finally
+            {
+                config.SaveOnConfigSet = saveOnConfigSet;
+            }
+            config.Save();
+        }
+
+        private void FlushWindowGeometry()
+        {
+            FlushManagerWindowGeometry();
+            _configFilesEditor?.FlushWindowGeometry();
+            _configSettingWindow?.FlushWindowGeometry();
+        }
+
+        private void FlushManagerWindowGeometry()
+        {
+            if (_windowGeometryDirty)
+            {
+                try { SaveCurrentSizeAndPosition(); }
+                catch (Exception ex)
+                {
+                    _windowGeometrySaveFailed = true;
+                    LogWarning("Could not save manager geometry: " + ex.Message);
+                }
+            }
+        }
+
         void OnDestroy()
         {
+            SettingFieldDrawer.FinishPendingRangeTextEditors();
+            FlushWindowGeometry();
             PathOfValheimanCompatibility.Reset();
             RemoveOwnedMenuButtons();
             _configFilesEditor?.Dispose();
@@ -290,11 +337,27 @@ namespace ConfigurationManager
 
         void Update()
         {
+            bool wasCapturingShortcut = SettingFieldDrawer.IsRecordingKeyboardShortcut ||
+                (_configSettingWindow?.IsRecordingKeyboardShortcut ?? false);
             if (DisplayingWindow && _externalSettingsRevision != ExternalSettingsRegistry.Revision)
                 BuildSettingList();
 
             if (DisplayingWindow)
                 SetUnlockCursor(0, true);
+
+            // Recording owns input for the whole frame, including the frame that
+            // completes or cancels it. F1 must not also close the manager.
+            if (wasCapturingShortcut)
+            {
+                if (!DisplayingWindow || !Application.isFocused || UnityInput.Current.GetKeyDown(KeyCode.Escape))
+                    CancelKeyboardShortcutCaptures();
+                else
+                {
+                    SettingFieldDrawer.UpdateKeyboardShortcutCapture();
+                    _configSettingWindow?.UpdateKeyboardShortcutCapture();
+                }
+                return;
+            }
 
             if (OverrideHotkey)
                 return;
@@ -319,6 +382,23 @@ namespace ConfigurationManager
                 SetUnlockCursor(0, true);
         }
 
+        internal void CancelKeyboardShortcutCaptures()
+        {
+            SettingFieldDrawer.CancelKeyboardShortcutCapture();
+            _configSettingWindow?.CancelKeyboardShortcutCapture();
+        }
+
+        internal void CancelBuiltInKeyRecordings()
+        {
+            SettingFieldDrawer.CancelBuiltInKeyRecording();
+            _configSettingWindow?.CancelBuiltInKeyRecording();
+        }
+
+        private void OnApplicationFocus(bool focused)
+        {
+            if (!focused) CancelKeyboardShortcutCaptures();
+        }
+
         /// <summary>
         /// Is the config manager main window displayed on screen
         /// </summary>
@@ -329,6 +409,13 @@ namespace ConfigurationManager
             {
                 if (_displayingWindow == value)
                     return;
+
+                if (_displayingWindow && !value)
+                {
+                    SettingFieldDrawer.FinishPendingRangeTextEditors();
+                    _configSettingWindow?.ClearCache();
+                    FlushWindowGeometry();
+                }
 
                 _displayingWindow = value;
 

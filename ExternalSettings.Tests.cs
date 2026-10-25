@@ -67,6 +67,7 @@ namespace ConfigurationManager.Tests
                 Program.RunAttributeTests(_assembly, failures);
                 FileEditorTests.Run(_assembly, failures, temporaryRoot);
                 PathOfValheimanCompatibilityTests.Run(_assembly, failures, temporaryRoot);
+                UiEditingTests.Run(_assembly, failures, temporaryRoot);
                 Console.WriteLine("ExternalSettings: " + _passed + " cases passed");
             }
             catch (Exception ex)
@@ -248,8 +249,7 @@ namespace ConfigurationManager.Tests
                 Check(!(bool)Call(numeric, "TrySetText", "-2"), "owner validation is respected");
                 Check((bool)Call(numeric, "TrySetText", "120.5") && number == 120.5f, "invariant numeric commit");
                 object entry = Entries().Single(item => (string)Get(item, "DispName") == "Sources");
-                object window = FormatterServices.GetUninitializedObject(_assembly.GetType("ConfigurationManager.SettingEditWindow", true));
-                SetField(window, "setting", entry);
+                object window = CreateManagedEditor(entry);
                 Call(window, "SetExternalText", "unfinished source");
                 Call(window, "ApplySettingValue");
                 Check((string)GetField(window, "_externalText") == "unfinished source", "failed Apply preserves editor text");
@@ -658,11 +658,14 @@ namespace ConfigurationManager.Tests
             Check((string)Call(entry, "Get") == "replacement", "view changes retain the intended committed value");
         }
 
-        private static object CreateManagedEditor(object entry)
+        internal static object CreateManagedEditor(object entry)
         {
             // Bypass only the constructor's Unity window/config sizing. Exercise the
             // real InitializeWindow/ApplySettingValue methods with their managed lists.
             object window = FormatterServices.GetUninitializedObject(_assembly.GetType("ConfigurationManager.SettingEditWindow", true));
+            SetField(window, "rangeTextEditor", Activator.CreateInstance(
+                _assembly.GetType("ConfigurationManager.SettingFieldDrawer+RangeTextEditor", true),
+                BindingFlags.Instance | BindingFlags.NonPublic, null, new object[] { "test-range" }, null));
             SetField(window, "setting", entry);
             SetField(window, "separatedString", new List<string>());
             SetField(window, "separatedStringDefault", new List<string>());

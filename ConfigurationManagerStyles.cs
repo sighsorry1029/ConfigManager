@@ -51,16 +51,63 @@ namespace ConfigurationManager
         private static GUIStyle delimiterLine;
         private static GUIStyle placeholderText;
 
+        private static bool _stylesInitialized;
+        private static StyleInputs _styleInputs;
+
+        private struct StyleInputs : IEquatable<StyleInputs>
+        {
+            internal GUISkin Skin;
+            internal Font SkinFont;
+            internal int FontSize;
+            internal int EditorFontSize;
+            internal bool EditorWordWrap;
+            internal Texture2D EntryBackground;
+            internal Texture2D TooltipBackground;
+            internal Texture2D HeaderBackground;
+            internal Texture2D HeaderBackgroundHover;
+            internal Texture2D SettingWindowBackground;
+
+            public bool Equals(StyleInputs other)
+            {
+                return ReferenceEquals(Skin, other.Skin)
+                    && ReferenceEquals(SkinFont, other.SkinFont)
+                    && FontSize == other.FontSize
+                    && EditorFontSize == other.EditorFontSize
+                    && EditorWordWrap == other.EditorWordWrap
+                    && ReferenceEquals(EntryBackground, other.EntryBackground)
+                    && ReferenceEquals(TooltipBackground, other.TooltipBackground)
+                    && ReferenceEquals(HeaderBackground, other.HeaderBackground)
+                    && ReferenceEquals(HeaderBackgroundHover, other.HeaderBackgroundHover)
+                    && ReferenceEquals(SettingWindowBackground, other.SettingWindowBackground);
+            }
+        }
+
         public static int fontSize = 14;
 
         public static void CreateStyles()
         {
-            _textSize.Value = Mathf.Clamp(_textSize.Value, 10, 30);
-            if (fontSize != _textSize.Value)
+            var inputs = new StyleInputs
             {
-                fontSize = _textSize.Value;
-                SettingFieldDrawer.ClearCache();
-            }
+                Skin = GUI.skin,
+                SkinFont = GUI.skin.font,
+                FontSize = Mathf.Clamp(_textSize.Value, 10, 30),
+                EditorFontSize = _textEditorFontSize.Value,
+                EditorWordWrap = _textEditorWordWrap.Value,
+                EntryBackground = EntryBackground,
+                TooltipBackground = TooltipBackground,
+                HeaderBackground = HeaderBackground,
+                HeaderBackgroundHover = HeaderBackgroundHover,
+                SettingWindowBackground = SettingWindowBackground
+            };
+            if (_stylesInitialized && fontSize == inputs.FontSize && _styleInputs.Equals(inputs))
+                return;
+            // Keep the same metrics from Layout through Repaint.
+            if (_stylesInitialized && Event.current.type != EventType.Layout)
+                return;
+
+            fontSize = inputs.FontSize;
+            if (_textSize.Value != inputs.FontSize)
+                _textSize.Value = inputs.FontSize;
 
             windowStyle = new GUIStyle(GUI.skin.window);
             windowStyle.normal.textColor = Palette.MainText;
@@ -251,10 +298,10 @@ namespace ConfigurationManager
             fileEditorTextArea = new GUIStyle(GUI.skin.textArea);
             fileEditorTextArea.padding = new RectOffset(5, 5, 5, 5);
             fileEditorTextArea.margin = new RectOffset(1, 1, 3, 3);
-            fileEditorTextArea.wordWrap = _textEditorWordWrap.Value;
+            fileEditorTextArea.wordWrap = inputs.EditorWordWrap;
             fileEditorTextArea.richText = false;
             fileEditorTextArea.alignment = TextAnchor.UpperLeft;
-            fileEditorTextArea.fontSize = _textEditorFontSize.Value;
+            fileEditorTextArea.fontSize = inputs.EditorFontSize;
             fileEditorTextArea.normal.textColor = Palette.FileEditorText;
 
             delimiterLine = new GUIStyle();
@@ -263,6 +310,11 @@ namespace ConfigurationManager
 
             placeholderText = new GUIStyle(textStyleValueDefault);
             placeholderText.normal.textColor = Color.gray;
+
+            _styleInputs = inputs;
+            _stylesInitialized = true;
+            // Combo boxes retain style references; numeric and hotkey edits do not.
+            SettingFieldDrawer.ClearComboboxCache();
         }
 
         public static GUIStyle GetWindowStyle() => windowStyle;

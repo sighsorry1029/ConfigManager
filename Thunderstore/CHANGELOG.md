@@ -1,3 +1,20 @@
+## 1.0.5
+
+### Changed
+* Record new built-in shortcuts with the last pressed key as the main key, then confirm when any key in that combination is released. Ask for another attempt when presses occur within the same frame and their order cannot be determined.
+* Display shortcuts as modifiers followed by the main key. Preserve existing bindings, BepInEx configuration serialization, custom hotkey drawers, and the detail editor's explicit Apply action.
+* Keep partially typed ranged numeric values in an edit buffer instead of clamping each keystroke. Validate and clamp completed input when submitted, while preserving read-only checks and Path of Valheiman edit locks.
+* Include single KeyCode settings in the Keybinds only filter.
+
+### Fixed
+* Cancel abandoned shortcut recordings on window close, focus loss, or editor changes. Prevent a recording key from also triggering the manager's hotkeys, and prevent simultaneous built-in key recording in the main and detail windows.
+* Isolate settings-collection failures to the affected plugin so incomplete metadata or a failing entry does not hide other plugins' settings.
+* Restore the GUI coordinate matrix only when the matching Harmony prefix changed it, including when manager visibility changes during the call.
+
+### Performance and maintenance
+* Reuse GUI styles until their inputs change and save window geometry after interaction, with related configuration updates written together.
+* Add managed regression coverage for shortcut press/release ordering, recording ownership, serialization, numeric editing, and batched window configuration saves.
+
 ## 1.0.4
 
 ### Fixed

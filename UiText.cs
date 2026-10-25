@@ -61,6 +61,8 @@ namespace ConfigurationManager
         public const string EnabledText = "Enabled";
         public const string DisabledText = "Disabled";
         public const string ShortcutKeyText = "Set";
+        public const string SingleKeyCaptureText = "Release a key";
         public const string ShortcutKeysText = "Press any key";
+        public const string ShortcutRetryText = "Release all keys, then press them in sequence";
     }
 }

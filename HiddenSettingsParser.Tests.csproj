@@ -37,6 +37,7 @@
     <Compile Include="ExternalSettings.Tests.cs" />
     <Compile Include="FileEditor.Tests.cs" />
     <Compile Include="PathOfValheimanCompatibility.Tests.cs" />
+    <Compile Include="UiEditing.Tests.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

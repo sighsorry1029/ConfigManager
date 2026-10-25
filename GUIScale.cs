@@ -16,23 +16,30 @@ namespace ConfigurationManager.Utilities
                 yield return AccessTools.Method(typeof(GUIUtility), nameof(GUIUtility.GUIToScreenPoint));
             }
 
-            [HarmonyPriority(Priority.First)]
-            private static void Prefix(ref Matrix4x4 __state)
+            private struct MatrixState
             {
-                if (!ConfigurationManager.instance.DisplayingWindow)
-                    return;
-
-                __state = GUI.matrix;
-                GUI.matrix = Matrix4x4.identity;
+                public bool Changed;
+                public Matrix4x4 Original;
             }
 
             [HarmonyPriority(Priority.First)]
-            private static void Postfix(Matrix4x4 __state)
+            private static void Prefix(out MatrixState __state)
             {
-                if (!ConfigurationManager.instance.DisplayingWindow)
+                __state = default;
+                ConfigurationManager manager = ConfigurationManager.instance;
+                if (!manager || !manager.DisplayingWindow)
                     return;
 
-                GUI.matrix = __state;
+                __state.Original = GUI.matrix;
+                GUI.matrix = Matrix4x4.identity;
+                __state.Changed = true;
+            }
+
+            [HarmonyPriority(Priority.First)]
+            private static void Postfix(MatrixState __state)
+            {
+                if (__state.Changed)
+                    GUI.matrix = __state.Original;
             }
         }
     }

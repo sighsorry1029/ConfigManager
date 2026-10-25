@@ -22,6 +22,10 @@ namespace ConfigurationManager
         private float lastClickTime;
         private Vector2 lastClickPosition;
         private const float DoubleClickThreshold = 0.3f;
+        private bool _windowGeometryDirty;
+        private bool _windowGeometrySaveFailed;
+        private Vector2? _pendingWindowSize;
+        private bool _windowGeometryResetPending;
 
         private ConfigFilesEditor _configFilesEditor;
         private SettingEditWindow _configSettingWindow;
@@ -50,32 +54,65 @@ namespace ConfigurationManager
                 if (scaleFactor != (scaleFactor = ScaleFactor))
                     guiMatrix = Matrix4x4.TRS(Vector3.zero, Quaternion.identity, new Vector3(scaleFactor, scaleFactor, 1f));
 
-                currentWindowRect.size = _windowSize.Value;
-                currentWindowRect.position = _windowPosition.Value;
+                if (!_windowGeometryDirty)
+                {
+                    currentWindowRect.size = _windowSize.Value;
+                    currentWindowRect.position = _windowPosition.Value;
+                }
 
                 GUI.tooltip = "";
 
                 var originalMatrix = GUI.matrix;
-                GUI.matrix = guiMatrix;
+                var originalBackground = GUI.backgroundColor;
+                var originalColor = GUI.color;
+                var originalContentColor = GUI.contentColor;
+                var originalEnabled = GUI.enabled;
+                try
+                {
+                    GUI.matrix = guiMatrix;
 
-                GUI.Box(currentWindowRect, GUIContent.none, GUIStyle.none);
-                var color = GUI.backgroundColor;
-                GUI.backgroundColor = Palette.WindowBackground;
+                    GUI.Box(currentWindowRect, GUIContent.none, GUIStyle.none);
+                    var color = GUI.backgroundColor;
+                    GUI.backgroundColor = Palette.WindowBackground;
 
-                CalculateSettingsColumnsWidth(currentWindowRect.width);
+                    CalculateSettingsColumnsWidth(currentWindowRect.width);
 
-                currentWindowRect = GUILayout.Window(WindowId, currentWindowRect, SettingsWindow, UiText.WindowTitle, GetWindowStyle());
+                    Rect drawnWindow = GUILayout.Window(WindowId, currentWindowRect, SettingsWindow, UiText.WindowTitle, GetWindowStyle());
+                    if (_windowGeometryResetPending)
+                    {
+                        drawnWindow = new Rect(_windowPosition.Value, _windowSize.Value);
+                        _pendingWindowSize = null;
+                        _windowGeometryResetPending = false;
+                    }
+                    else if (_pendingWindowSize.HasValue)
+                    {
+                        drawnWindow.size = _pendingWindowSize.Value;
+                        _pendingWindowSize = null;
+                    }
+                    currentWindowRect = drawnWindow;
 
-                if (!UnityInput.Current.GetKeyDown(KeyCode.Mouse0) && (currentWindowRect.position != _windowPosition.Value))
-                    SaveCurrentSizeAndPosition();
+                    if (currentWindowRect.position != _windowPosition.Value)
+                        _windowGeometryDirty = true;
+                    bool mouseHeld = UnityInput.Current.GetMouseButton(0);
+                    if (mouseHeld) _windowGeometrySaveFailed = false;
+                    if (_windowGeometryDirty && !mouseHeld && !_windowGeometrySaveFailed)
+                        FlushManagerWindowGeometry();
 
-                GUI.backgroundColor = color;
+                    GUI.backgroundColor = color;
 
-                _configFilesEditor.OnGUI();
+                    if (!DisplayingWindow) return;
+                    _configFilesEditor.OnGUI();
 
-                _configSettingWindow.OnGUI();
-
-                GUI.matrix = originalMatrix;
+                    _configSettingWindow.OnGUI();
+                }
+                finally
+                {
+                    GUI.matrix = originalMatrix;
+                    GUI.backgroundColor = originalBackground;
+                    GUI.color = originalColor;
+                    GUI.contentColor = originalContentColor;
+                    GUI.enabled = originalEnabled;
+                }
             }
         }
 
@@ -90,9 +127,17 @@ namespace ConfigurationManager
 
         internal void SaveCurrentSizeAndPosition()
         {
-            _windowSize.Value = new Vector2(Mathf.Clamp(currentWindowRect.size.x, 500f, ScreenWidth), Mathf.Clamp(currentWindowRect.size.y, 200f, ScreenHeight));
-            _windowPosition.Value = new Vector2(Mathf.Clamp(currentWindowRect.position.x, 0f, ScreenWidth - _windowSize.Value.x / 4f), Mathf.Clamp(currentWindowRect.position.y, 0f, ScreenHeight - HeaderSize * 2));
-            Config.Save();
+            var size = new Vector2(Mathf.Clamp(currentWindowRect.size.x, 500f, ScreenWidth), Mathf.Clamp(currentWindowRect.size.y, 200f, ScreenHeight));
+            var position = new Vector2(Mathf.Clamp(currentWindowRect.position.x, 0f, ScreenWidth - size.x / 4f), Mathf.Clamp(currentWindowRect.position.y, 0f, ScreenHeight - HeaderSize * 2));
+            SaveWindowConfigChanges(Config, () =>
+            {
+                _windowSize.Value = size;
+                _windowPosition.Value = position;
+            });
+            currentWindowRect = new Rect(position, size);
+            _windowGeometryDirty = false;
+            _windowGeometrySaveFailed = false;
+            _pendingWindowSize = null;
             SettingFieldDrawer.ClearComboboxCache();
         }
 
@@ -100,14 +145,33 @@ namespace ConfigurationManager
         {
             CalculateDefaultWindowRect();
 
-            _windowSize.Value = GetDefaultManagerWindowSize();
-            _windowPosition.Value = GetDefaultManagerWindowPosition();
-            _windowSizeTextEditor.Value = GetDefaultTextEditorWindowSize();
-            _windowPositionTextEditor.Value = GetDefaultTextEditorWindowPosition();
-            _windowPositionEditSetting.Value = GetDefaultEditSettingWindowPosition();
-            _windowSizeEditSetting.Value = GetDefaultEditSettingWindowSize();
-
-            Config.Save();
+            bool saved = false;
+            try
+            {
+                SaveWindowConfigChanges(Config, () =>
+                {
+                    _windowSize.Value = GetDefaultManagerWindowSize();
+                    _windowPosition.Value = GetDefaultManagerWindowPosition();
+                    _windowSizeTextEditor.Value = GetDefaultTextEditorWindowSize();
+                    _windowPositionTextEditor.Value = GetDefaultTextEditorWindowPosition();
+                    _windowPositionEditSetting.Value = GetDefaultEditSettingWindowPosition();
+                    _windowSizeEditSetting.Value = GetDefaultEditSettingWindowSize();
+                });
+                saved = true;
+            }
+            catch (Exception ex)
+            {
+                LogWarning("Could not save reset window geometry: " + ex.Message);
+            }
+            // The in-memory config may already have changed even if saving failed.
+            // Do not overwrite it with the pre-reset rectangle on the next flush.
+            currentWindowRect = new Rect(_windowPosition.Value, _windowSize.Value);
+            _windowGeometryDirty = !saved;
+            _windowGeometrySaveFailed = !saved;
+            _pendingWindowSize = null;
+            _windowGeometryResetPending = true;
+            _configFilesEditor?.ResetWindowGeometry();
+            _configSettingWindow?.ResetWindowGeometry();
             SettingFieldDrawer.ClearComboboxCache();
         }
 
@@ -126,31 +190,53 @@ namespace ConfigurationManager
 
         private void SettingsWindow(int id)
         {
+            SettingFieldDrawer.BeginKeyboardShortcutGUI();
+            SettingFieldDrawer.RangeTextEditor.BeginWindowEvent();
             SettingFieldDrawer.BeginExternalNumericGUI();
-            var headerRect = new Rect(0, 0, currentWindowRect.width, HeaderSize);
-            HandleHeaderDblClick(headerRect);
+            try
+            {
+                var headerRect = new Rect(0, 0, currentWindowRect.width, HeaderSize);
+                HandleHeaderDblClick(headerRect);
 
-            GUI.DragWindow(headerRect);
-            DrawWindowHeader();
+                GUI.DragWindow(headerRect);
+                DrawWindowHeader();
 
-            var backgroundColor = GUI.backgroundColor;
-            GUI.backgroundColor = Palette.EntryBackground;
+                var backgroundColor = GUI.backgroundColor;
+                GUI.backgroundColor = Palette.EntryBackground;
 
-            if (SplitView)
-                DrawSplitView();
-            else
-                DrawListView();
+                if (SplitView)
+                    DrawSplitView();
+                else
+                    DrawListView();
 
-            GUI.backgroundColor = backgroundColor;
+                GUI.backgroundColor = backgroundColor;
 
-            if (!SettingFieldDrawer.DrawCurrentDropdown())
-                DrawTooltip(currentWindowRect);
+                if (!SettingFieldDrawer.DrawCurrentDropdown())
+                    DrawTooltip(currentWindowRect);
 
-            currentWindowRect = Utilities.Utils.ResizeWindow(id, currentWindowRect, out var sizeChanged);
+                currentWindowRect = Utilities.Utils.ResizeWindow(id, currentWindowRect, out var sizeChanged);
 
-            if (sizeChanged)
-                SaveCurrentSizeAndPosition();
-            SettingFieldDrawer.EndExternalNumericGUI();
+                if (sizeChanged)
+                {
+                    currentWindowRect.size = new Vector2(Mathf.Clamp(currentWindowRect.width, 500f, ScreenWidth),
+                        Mathf.Clamp(currentWindowRect.height, 200f, ScreenHeight));
+                    _pendingWindowSize = currentWindowRect.size;
+                    _windowGeometryDirty = true;
+                }
+            }
+            finally
+            {
+                try
+                {
+                    SettingFieldDrawer.FinishUndrawnRangeTextEditors();
+                    SettingFieldDrawer.EndExternalNumericGUI();
+                }
+                finally
+                {
+                    SettingFieldDrawer.FinishUndrawnKeyboardShortcutCapture();
+                    SettingFieldDrawer.RangeTextEditor.EndWindowEvent();
+                }
+            }
         }
 
         private void DrawSplitView()
@@ -456,7 +542,13 @@ namespace ConfigurationManager
                     DrawSettingName(setting);
                     // A custom drawer receives ConfigEntryBase directly and can bypass SetValue.
                     if (povLocked)
-                        GUILayout.Label(setting.Get()?.ToString() ?? string.Empty, GetLabelStyle(), GUILayout.ExpandWidth(true));
+                    {
+                        object lockedValue = setting.Get();
+                        GUIContent lockedContent = lockedValue is KeyboardShortcut lockedShortcut
+                            ? SettingFieldDrawer.GetKeyboardShortcutContent(lockedShortcut)
+                            : new GUIContent(lockedValue?.ToString() ?? string.Empty);
+                        GUILayout.Label(lockedContent, GetLabelStyle(), GUILayout.ExpandWidth(true));
+                    }
                     else if (setting is ExternalSettingEntry external && external.UsesTextEditor && !external.UsesInlineNumericEditor)
                     {
                         GUILayout.Label(new GUIContent(external.GetPreviewText(), external.ReadOnly == true
@@ -502,7 +594,11 @@ namespace ConfigurationManager
             GUILayout.Label(new GUIContent(setting.DispName.TrimStart('!'), setting.Description), GetLabelStyleSettingName(), GUILayout.ExpandWidth(true));
             if (!(setting is ExternalSettingEntry external && external.UsesInlineNumericEditor) &&
                 GUILayout.Button(new GUIContent(UiText.EditText, setting.Description), GetButtonStyle(), GUILayout.ExpandWidth(false)))
+            {
+                // The dialog must snapshot the value after the inline edit is submitted.
+                SettingFieldDrawer.FinishPendingRangeTextEditors();
                 _configSettingWindow.EditSetting(setting);
+            }
 
             GUILayout.EndHorizontal();
 
@@ -526,6 +622,8 @@ namespace ConfigurationManager
             {
                 if (DrawResetButton())
                 {
+                    instance?.CancelKeyboardShortcutCaptures();
+                    SettingFieldDrawer.CancelRangeTextEdit(setting);
                     if (setting is ExternalSettingEntry external && external.UsesInlineNumericEditor)
                         external.NumericEditor.Reset();
                     else
@@ -535,7 +633,11 @@ namespace ConfigurationManager
             else if (setting.SettingType.IsClass)
             {
                 if (DrawResetButton())
+                {
+                    instance?.CancelKeyboardShortcutCaptures();
+                    SettingFieldDrawer.CancelRangeTextEdit(setting);
                     setting.Set(null);
+                }
             }
 
             GUI.backgroundColor = color;
@@ -543,6 +645,7 @@ namespace ConfigurationManager
 
         public void BuildSettingList()
         {
+            CancelKeyboardShortcutCaptures();
             // Capture before collecting: a concurrent registration cannot be mistaken
             // for one already included in the newly built list.
             _externalSettingsRevision = ExternalSettingsRegistry.Revision;
@@ -560,6 +663,7 @@ namespace ConfigurationManager
 
         public void BuildFilteredSettingList()
         {
+            SettingFieldDrawer.CancelKeyboardShortcutCapture();
             IEnumerable<SettingEntryBase> results = _allSettings;
             var categoryOrders = _allSettings
                 .Where(setting => setting.PluginInfo != null)
@@ -639,7 +743,7 @@ namespace ConfigurationManager
                 .ToList();
         }
 
-        private static bool IsKeyboardShortcut(SettingEntryBase x) => x.SettingType == typeof(KeyboardShortcut);
+        private static bool IsKeyboardShortcut(SettingEntryBase x) => x.SettingType == typeof(KeyboardShortcut) || x.SettingType == typeof(KeyCode);
 
         private static bool ContainsSearchString(SettingEntryBase setting, string[] searchStrings)
         {
