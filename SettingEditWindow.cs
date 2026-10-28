@@ -398,6 +398,7 @@ namespace ConfigurationManager
             SettingFieldDrawer.RangeTextEditor.BeginWindowEvent();
             try
             {
+                DrawWindowBackgroundDimming(_windowRect.size);
                 DrawWindowContents(windowID);
             }
             finally

@@ -84,6 +84,39 @@ namespace ConfigurationManager
 
         public static int fontSize = 14;
 
+        internal static void DrawWindowBackgroundDimming(Vector2 windowSize)
+        {
+            int dimming = _backgroundDimming?.Value ?? 0;
+            if (dimming <= 0 || Event.current.type != EventType.Repaint || windowStyle == null || WindowBackground == null)
+                return;
+
+            // Called inside the window, before its controls. Keep the skin's title and border visible.
+            RectOffset border = windowStyle.border;
+            RectOffset padding = windowStyle.padding;
+            float left = Math.Max(border.left, padding.left);
+            float right = Math.Max(border.right, padding.right);
+            float top = Math.Max(HeaderSize, Math.Max(border.top, padding.top));
+            float bottom = Math.Max(border.bottom, padding.bottom);
+            var area = new Rect(left, top, windowSize.x - left - right, windowSize.y - top - bottom);
+            if (area.width <= 0f || area.height <= 0f)
+                return;
+
+            Color color = GUI.color;
+            bool enabled = GUI.enabled;
+            try
+            {
+                GUI.color = new Color(1f, 1f, 1f, Mathf.Clamp(dimming, 0, 100) / 100f);
+                GUI.enabled = true;
+                // Reuse the opaque black texture created when the manager opens.
+                GUI.DrawTexture(area, WindowBackground, ScaleMode.StretchToFill, true);
+            }
+            finally
+            {
+                GUI.color = color;
+                GUI.enabled = enabled;
+            }
+        }
+
         public static void CreateStyles()
         {
             var inputs = new StyleInputs

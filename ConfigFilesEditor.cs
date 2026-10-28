@@ -215,6 +215,7 @@ namespace ConfigurationManager
 
         private void DrawWindow(int windowID)
         {
+            DrawWindowBackgroundDimming(_windowRect.size);
             GUILayout.BeginHorizontal();
             {
                 var backgroundColor = GUI.backgroundColor;

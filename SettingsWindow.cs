@@ -195,6 +195,7 @@ namespace ConfigurationManager
             SettingFieldDrawer.BeginExternalNumericGUI();
             try
             {
+                DrawWindowBackgroundDimming(currentWindowRect.size);
                 var headerRect = new Rect(0, 0, currentWindowRect.width, HeaderSize);
                 HandleHeaderDblClick(headerRect);
 

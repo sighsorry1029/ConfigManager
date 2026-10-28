@@ -22,7 +22,7 @@ namespace ConfigurationManager
     {
         public const string GUID = "sighsorry.ConfigManager";
         public const string pluginName = "ConfigManager";
-        public const string ModVersion = "1.0.5";
+        public const string ModVersion = "1.0.6";
         public const string Version = ModVersion;
 
         internal static ConfigurationManager instance;
@@ -133,6 +133,7 @@ namespace ConfigurationManager
 
         public static ConfigEntry<KeyboardShortcut> _keybind;
         public static ConfigEntry<int> _textSize;
+        internal static ConfigEntry<int> _backgroundDimming;
 
         public static ConfigEntry<bool> _splitView;
         public static ConfigEntry<Vector2> _windowPosition;
@@ -178,6 +179,11 @@ namespace ConfigurationManager
             _textSize = Config.Bind(GeneralSection, "Font size", 14,
                 Describe("Font size used throughout ConfigManager.", GeneralSectionOrder, 900,
                     new AcceptableValueRange<int>(10, 30)));
+            _backgroundDimming = Config.Bind(GeneralSection, "Background dimming", 0,
+                Describe("Darken the content background of all ConfigManager windows (0-100%). " +
+                    "0 keeps the original appearance; 100 hides the game behind the content. " +
+                    "Titles, borders and text are unchanged.", GeneralSectionOrder, 800,
+                    new AcceptableValueRange<int>(0, 100)));
 
             _loggingEnabled = Config.Bind(InternalSection, "Verbose logging", false,
                 HiddenDescription("Write diagnostic ConfigManager messages."));

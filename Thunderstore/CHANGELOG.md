@@ -1,3 +1,9 @@
+## 1.0.6
+
+### Added
+* Add a single Background dimming option (0-100) under General, shared by the main window, setting editor, and file editor. Adjust it through the settings UI or configuration file.
+* Keep the original appearance at the default value of 0. Higher values reduce game-background visibility behind window contents, and 100 blocks it completely in the content area. Preserve title bars, borders, text, and existing panel and hover colors.
+
 ## 1.0.5
 
 ### Changed
