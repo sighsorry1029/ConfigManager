@@ -1,9 +1,9 @@
 {
   "name": "ConfigManager",
-  "version_number": "1.0.6",
+  "version_number": "1.0.7",
   "website_url": "",
   "description": "",
   "dependencies": [
-    "denikson-BepInExPack_Valheim-5.4.2351"
+    "denikson-BepInExPack_Valheim-5.4.2360"
   ]
 }

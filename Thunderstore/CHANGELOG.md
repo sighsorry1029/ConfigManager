@@ -1,3 +1,10 @@
+## 1.0.7
+
+### Changed
+* Show the detected shortcut combination as each key is pressed in the main window and setting editor, including combinations of three or more keys. Clear the preview on cancellation or ambiguous input.
+* Preserve the existing recording and storage behavior: the last pressed key is the main key, releasing a key in the combination confirms it once, and the setting editor still requires Apply to save. Previewing intermediate combinations does not change the actual setting.
+* Update the BepInExPack dependency to 5.4.2360.
+
 ## 1.0.6
 
 ### Added

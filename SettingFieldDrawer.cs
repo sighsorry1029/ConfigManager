@@ -50,10 +50,12 @@ namespace ConfigurationManager
             private KeyCode mainKey;
             private readonly List<KeyCode> modifiers = new List<KeyCode>();
             private bool waitingForRelease;
+            private string previewText;
 
             internal bool IsActive { get; private set; }
             internal bool NeedsRetry { get; private set; }
             internal int LastProcessedFrame { get; private set; } = int.MinValue;
+            internal string DisplayText => NeedsRetry ? UiText.ShortcutRetryText : previewText ?? UiText.ShortcutKeysText;
 
             internal void Begin(int frame)
             {
@@ -69,6 +71,7 @@ namespace ConfigurationManager
                 waitingForRelease = false;
                 mainKey = KeyCode.None;
                 modifiers.Clear();
+                previewText = null;
             }
 
             private static bool IsSupported(KeyCode key) => key != KeyCode.None && key != KeyCode.Mouse0;
@@ -114,6 +117,7 @@ namespace ConfigurationManager
                 {
                     mainKey = KeyCode.None;
                     modifiers.Clear();
+                    previewText = null;
                     NeedsRetry = true;
                     waitingForRelease = HasSupportedKey(held);
                     return false;
@@ -129,6 +133,8 @@ namespace ConfigurationManager
                         if (IsSupported(key) && key != mainKey && !modifiers.Contains(key)) modifiers.Add(key);
                     }
                     NeedsRetry = false;
+                    // Refresh only on a new press; showing the candidate never writes the setting.
+                    previewText = FormatKeyboardShortcutLabel(new KeyboardShortcut(mainKey, modifiers.ToArray()));
                 }
 
                 if (mainKey == KeyCode.None) return false;
@@ -1091,7 +1097,7 @@ namespace ConfigurationManager
             if (MainShortcutCapture.IsActive && ReferenceEquals(_capturedShortcutSetting, setting))
             {
                 _shortcutCaptureDrawn = true;
-                GUILayout.Label(MainShortcutCapture.NeedsRetry ? UiText.ShortcutRetryText : UiText.ShortcutKeysText,
+                GUILayout.Label(MainShortcutCapture.DisplayText,
                     GetLabelStyleSettingName(), GUILayout.ExpandWidth(true));
                 GUIUtility.keyboardControl = -1;
 

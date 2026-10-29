@@ -1290,7 +1290,7 @@ namespace ConfigurationManager
             if (IsRecordingKeyboardShortcut && ReferenceEquals(_capturedShortcutSetting, setting))
             {
                 _shortcutCaptureDrawn = true;
-                GUILayout.Label(_shortcutCapture?.NeedsRetry == true ? UiText.ShortcutRetryText : UiText.ShortcutKeysText,
+                GUILayout.Label(_shortcutCapture.DisplayText,
                     GetLabelStyleSettingName(), GUILayout.ExpandWidth(true));
                 GUIUtility.keyboardControl = -1;
 
