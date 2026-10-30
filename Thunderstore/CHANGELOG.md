@@ -1,3 +1,14 @@
+## 1.0.8
+
+### Changed
+* Keep simultaneous shortcut key presses pending so a later single press can identify the main key. Support combinations such as Ctrl+Shift followed by X, or Y+X followed by C, in both the main window and setting editor.
+* Show pending keys immediately with a trailing `+ ...`. Request another attempt if a combination key is released before the main key is known, and retain protection against ambiguous presses and releases within the same frame.
+* Display Ctrl, Alt, and Shift modifiers before other held keys, while keeping the actual main key last and preserving left/right distinctions. Shift followed by Alt and Alt followed by Shift retain their respective main keys.
+* Preserve existing bindings, BepInEx storage format, confirmation on a combination key's release once the main key is known, and the setting editor's explicit Apply action.
+
+### Maintenance
+* Extend managed regression coverage for pending combinations, cancellation, fast taps, modifier display order, and unchanged shortcut serialization.
+
 ## 1.0.7
 
 ### Changed

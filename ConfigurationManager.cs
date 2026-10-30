@@ -22,7 +22,7 @@ namespace ConfigurationManager
     {
         public const string GUID = "sighsorry.ConfigManager";
         public const string pluginName = "ConfigManager";
-        public const string ModVersion = "1.0.7";
+        public const string ModVersion = "1.0.8";
         public const string Version = ModVersion;
 
         internal static ConfigurationManager instance;
@@ -262,8 +262,31 @@ namespace ConfigurationManager
             if (shortcut.MainKey == KeyCode.None)
                 return shortcut.ToString();
 
-            string held = string.Join(" + ", shortcut.Modifiers);
+            string held = FormatShortcutModifiers(shortcut.Modifiers);
             return held.Length == 0 ? shortcut.ToString() : held + " + " + shortcut.MainKey;
+        }
+
+        // Sort a display-only copy. A modifier key can itself be MainKey, which
+        // the caller keeps outside this list and displays last.
+        internal static string FormatShortcutModifiers(IEnumerable<KeyCode> keys)
+        {
+            var ordered = new List<KeyCode>(keys);
+            ordered.Sort((left, right) => ShortcutModifierDisplayOrder(left).CompareTo(ShortcutModifierDisplayOrder(right)));
+            return string.Join(" + ", ordered);
+        }
+
+        private static int ShortcutModifierDisplayOrder(KeyCode key)
+        {
+            switch (key)
+            {
+                case KeyCode.LeftControl: return 0;
+                case KeyCode.RightControl: return 1;
+                case KeyCode.LeftAlt: return 2;
+                case KeyCode.RightAlt: return 3;
+                case KeyCode.LeftShift: return 4;
+                case KeyCode.RightShift: return 5;
+                default: return 6 + (int)key;
+            }
         }
 
         internal static void SaveWindowConfigChanges(ConfigFile config, Action applyChanges)

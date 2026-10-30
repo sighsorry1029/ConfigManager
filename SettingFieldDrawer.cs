@@ -83,6 +83,15 @@ namespace ConfigurationManager
                 return false;
             }
 
+            private void RequireRetry(IList<KeyCode> held)
+            {
+                mainKey = KeyCode.None;
+                modifiers.Clear();
+                previewText = null;
+                NeedsRetry = true;
+                waitingForRelease = HasSupportedKey(held);
+            }
+
             internal bool ProcessFrame(int frame, IList<KeyCode> pressed, IList<KeyCode> held,
                 IList<KeyCode> released, out KeyboardShortcut shortcut)
             {
@@ -97,51 +106,57 @@ namespace ConfigurationManager
                 }
 
                 KeyCode newlyPressed = KeyCode.None;
-                bool ambiguous = false;
+                bool multiplePressed = false;
                 for (int index = 0; index < pressed.Count; index++)
                 {
                     KeyCode key = pressed[index];
                     if (!IsSupported(key)) continue;
-                    if (newlyPressed != KeyCode.None && newlyPressed != key) ambiguous = true;
+                    if (newlyPressed != KeyCode.None && newlyPressed != key) multiplePressed = true;
                     newlyPressed = key;
                 }
                 if (newlyPressed != KeyCode.None)
                 {
                     // Boolean polling cannot tell whether another key was released
-                    // before or after this press within the same frame.
+                    // before or after a press within the same frame. A sole key's
+                    // down/up is still an unambiguous fast tap.
                     for (int index = 0; index < released.Count; index++)
-                        if (IsSupported(released[index]) && released[index] != newlyPressed)
-                            ambiguous = true;
-                }
-                if (ambiguous)
-                {
-                    mainKey = KeyCode.None;
-                    modifiers.Clear();
-                    previewText = null;
-                    NeedsRetry = true;
-                    waitingForRelease = HasSupportedKey(held);
-                    return false;
-                }
+                        if (IsSupported(released[index]) && (multiplePressed || released[index] != newlyPressed))
+                        {
+                            RequireRetry(held);
+                            return false;
+                        }
 
-                if (newlyPressed != KeyCode.None)
-                {
-                    mainKey = newlyPressed;
+                    // Simultaneous presses have no known last key. Keep the chord
+                    // pending until a later single press identifies its main key.
+                    mainKey = multiplePressed ? KeyCode.None : newlyPressed;
                     modifiers.Clear();
                     for (int index = 0; index < held.Count; index++)
                     {
                         KeyCode key = held[index];
                         if (IsSupported(key) && key != mainKey && !modifiers.Contains(key)) modifiers.Add(key);
                     }
+                    if (multiplePressed)
+                        for (int index = 0; index < pressed.Count; index++)
+                        {
+                            KeyCode key = pressed[index];
+                            if (IsSupported(key) && !modifiers.Contains(key)) modifiers.Add(key);
+                        }
                     NeedsRetry = false;
                     // Refresh only on a new press; showing the candidate never writes the setting.
-                    previewText = FormatKeyboardShortcutLabel(new KeyboardShortcut(mainKey, modifiers.ToArray()));
+                    previewText = mainKey == KeyCode.None
+                        ? FormatShortcutModifiers(modifiers) + " + ..."
+                        : FormatKeyboardShortcutLabel(new KeyboardShortcut(mainKey, modifiers.ToArray()));
                 }
 
-                if (mainKey == KeyCode.None) return false;
                 for (int index = 0; index < released.Count; index++)
                 {
                     KeyCode key = released[index];
-                    if (key != mainKey && !modifiers.Contains(key)) continue;
+                    if (!IsSupported(key) || (key != mainKey && !modifiers.Contains(key))) continue;
+                    if (mainKey == KeyCode.None)
+                    {
+                        RequireRetry(held);
+                        return false;
+                    }
                     shortcut = new KeyboardShortcut(mainKey, modifiers.ToArray());
                     Cancel(); // Detach state before the caller invokes a setting callback.
                     return true;

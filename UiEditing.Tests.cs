@@ -57,7 +57,11 @@ namespace ConfigurationManager.Tests
             Case("capture samples a frame once and accepts a single-key fast tap", CaptureFrameBoundaries, failures, ref passed);
             Case("capture cancellation and rearming discard the prior candidate", CaptureCancellation, failures, ref passed);
             Case("capture excludes activation mouse clicks and None", CaptureExcludedKeys, failures, ref passed);
-            Case("ambiguous simultaneous presses retry without choosing enumeration order", CaptureAmbiguousPresses, failures, ref passed);
+            Case("simultaneous modifier and ordinary groups resolve on a later sole press", CaptureSimultaneousGroups, failures, ref passed);
+            Case("unresolved releases retry without guessing a trigger", CaptureUnresolvedRelease, failures, ref passed);
+            Case("simultaneous groups invalidate an earlier trigger and allow further groups", CapturePendingReplacesCandidate, failures, ref passed);
+            Case("pending capture cancellation and rearming discard the group and preview", CapturePendingCancellation, failures, ref passed);
+            Case("a sole fast tap resolves a pending group", CapturePendingFastTap, failures, ref passed);
             Case("mixed press and other-key release retries without saving stale input", CaptureMixedTransitions, failures, ref passed);
             Case("separate taps do not accumulate into a chord or commit twice", CaptureSeparateTaps, failures, ref passed);
             Case("main shortcut capture writes once through the real setting despite callback reentry", CaptureMainSubmission, failures, ref passed);
@@ -111,6 +115,7 @@ namespace ConfigurationManager.Tests
             internal Capture(int frame = 0) => Begin(frame);
             internal bool IsActive => (bool)_captureType.GetProperty("IsActive", Instance).GetValue(state);
             internal bool NeedsRetry => (bool)_captureType.GetProperty("NeedsRetry", Instance).GetValue(state);
+            internal string DisplayText => (string)_captureType.GetProperty("DisplayText", Instance).GetValue(state);
             internal void Begin(int frame) => _captureType.GetMethod("Begin", Instance).Invoke(state, new object[] { frame });
             internal void Cancel() => _captureType.GetMethod("Cancel", Instance).Invoke(state, null);
             internal bool Frame(int frame, string pressed, string held, string released, out object shortcut)
@@ -140,10 +145,9 @@ namespace ConfigurationManager.Tests
                 new HashSet<string>(actual).SetEquals(modifiers), "modifiers preserve the press-time chord exactly");
             string serialized = shortcut.ToString();
             string expectedSaved = main + (actual.Length == 0 ? "" : " + " + string.Join(" + ", actual));
-            string expectedLabel = actual.Length == 0 ? main : string.Join(" + ", actual) + " + " + main;
-            Check(serialized == expectedSaved &&
-                (string)_labelShortcut.Invoke(null, new[] { shortcut }) == expectedLabel,
-                "new captures keep BepInEx main-first serialization and held-first display");
+            string label = (string)_labelShortcut.Invoke(null, new[] { shortcut });
+            Check(serialized == expectedSaved && (actual.Length == 0 ? label == main : label.EndsWith(" + " + main, StringComparison.Ordinal)),
+                "new captures keep BepInEx main-first serialization and display the actual trigger last");
         }
 
         private static void CaptureReleaseOrders()
@@ -164,7 +168,8 @@ namespace ConfigurationManager.Tests
         private static void CapturePressOrder()
         {
             foreach (var pair in new[] { new[] { "B", "A" }, new[] { "LeftAlt", "X" },
-                new[] { "X", "LeftAlt" }, new[] { "Q", "E" } })
+                new[] { "X", "LeftAlt" }, new[] { "Q", "E" },
+                new[] { "LeftShift", "LeftAlt" }, new[] { "LeftAlt", "LeftShift" } })
             {
                 var capture = new Capture();
                 capture.Frame(1, pair[0], pair[0], "", out _);
@@ -231,21 +236,133 @@ namespace ConfigurationManager.Tests
             Check(!capture.Frame(3, "", "A", "Mouse0 None", out _), "excluded releases do not commit a candidate");
             Check(capture.Frame(4, "", "", "A", out object shortcut), "the supported trigger still commits normally");
             AssertCaptured(shortcut, "A");
+            capture.Begin(5);
+            Check(!capture.Frame(6, "A A Mouse0 None", "A Mouse0 None", "", out _) && !capture.NeedsRetry && capture.DisplayText == "A",
+                "duplicate reports of one supported key do not create an unresolved group");
+            Check(capture.Frame(7, "", "", "A", out shortcut), "a duplicated report still captures a single key");
+            AssertCaptured(shortcut, "A");
         }
 
-        private static void CaptureAmbiguousPresses()
+        private static void CaptureSimultaneousGroups()
+        {
+            // Ctrl+RightAlt models an AltGr report, without claiming a real keyboard-layout test.
+            foreach (var example in new[]
+            {
+                new[] { "LeftControl LeftShift", "LeftControl + LeftShift", "X" },
+                new[] { "LeftShift LeftControl", "LeftControl + LeftShift", "X" },
+                new[] { "LeftAlt LeftControl", "LeftControl + LeftAlt", "X" },
+                new[] { "RightAlt LeftControl", "LeftControl + RightAlt", "X" },
+                new[] { "Y X", "X + Y", "C" },
+                new[] { "X Y", "X + Y", "C" }
+            })
+            {
+                string group = example[0];
+                string main = example[2];
+                var capture = new Capture();
+                Check(!capture.Frame(1, group + " None Mouse0", group + " None Mouse0", "", out object pending) &&
+                    !capture.NeedsRetry && capture.IsActive,
+                    "simultaneous supported keys remain pending instead of forcing a retry: " + group);
+                Check(_shortcutType.GetProperty("MainKey").GetValue(pending).ToString() == "None",
+                    "pending input never emits a shortcut with an invented main key");
+                string preview = capture.DisplayText;
+                Check(preview == example[1] + " + ...", "pending preview shows detected keys and an unresolved trigger");
+                Check(!capture.Frame(2, "", group, "", out _) && ReferenceEquals(preview, capture.DisplayText),
+                    "idle frames reuse the pending preview without rebuilding it");
+                Check(!capture.Frame(3, "", group, "Z", out _) && !capture.NeedsRetry &&
+                    ReferenceEquals(preview, capture.DisplayText),
+                    "unrelated release keeps the pending group and cached preview");
+                Check(!capture.Frame(4, main, group + " " + main, "", out _) && !capture.NeedsRetry &&
+                    capture.DisplayText == example[1] + " + " + main,
+                    "a later sole press resolves the trigger and immediately replaces the pending preview");
+                Check(capture.Frame(5, "", group, main, out object shortcut),
+                    "a resolved chord commits when a member is released");
+                AssertCaptured(shortcut, main, group.Split(' '));
+                Check(!capture.IsActive && !capture.Frame(6, "", "", group, out _),
+                    "the remaining releases cannot commit a resolved group twice");
+            }
+        }
+
+        private static void CaptureUnresolvedRelease()
+        {
+            foreach (string group in new[] { "LeftControl LeftShift", "Y X", "LeftControl RightAlt", "LeftControl LeftShift X" })
+            {
+                foreach (bool releaseAll in new[] { false, true })
+                {
+                    string[] keys = group.Split(' ');
+                    string remaining = releaseAll ? "" : string.Join(" ", keys.Skip(1));
+                    var capture = new Capture();
+                    capture.Frame(1, group, group, "", out _);
+                    Check(!capture.Frame(2, "", remaining, releaseAll ? group : keys[0], out _) &&
+                        capture.NeedsRetry && capture.IsActive,
+                        "releasing an unresolved chord cannot choose its main key by type or enumeration order");
+                    Check(capture.DisplayText == "Release all keys, then press them in sequence",
+                        "unresolved release replaces the pending preview with the retry instruction");
+                    if (!releaseAll)
+                    {
+                        Check(!capture.Frame(3, "Z", remaining + " Z", "", out _),
+                            "after an unresolved release, new presses wait for all old keys to be released");
+                        Check(!capture.Frame(4, "", "", remaining + " Z", out _), "draining a failed chord does not save it");
+                    }
+                    capture.Frame(5, "D", "D", "", out _);
+                    Check(!capture.NeedsRetry && capture.DisplayText == "D", "a fresh attempt clears the retry state");
+                    Check(capture.Frame(6, "", "", "D", out object shortcut), "retry works without reopening the recorder");
+                    AssertCaptured(shortcut, "D");
+                }
+            }
+        }
+
+        private static void CapturePendingReplacesCandidate()
         {
             var capture = new Capture();
             capture.Frame(1, "A", "A", "", out _);
-            Check(!capture.Frame(2, "B C", "A B C", "", out _) && capture.NeedsRetry && capture.IsActive,
-                "multiple new presses have no reliable order and must discard the prior candidate");
-            Check(!capture.Frame(3, "D", "A B C D", "", out _), "retry does not collect keys until the old chord is fully released");
-            Check(!capture.Frame(4, "", "", "A B C D", out _), "releasing an ambiguous chord cannot save any guessed trigger");
-            capture.Frame(5, "X", "X", "", out _);
-            Check(!capture.NeedsRetry, "a fresh press clears the retry indication");
-            Check(capture.Frame(6, "", "", "X", out object shortcut),
-                "a fresh unambiguous attempt works without reopening the recorder");
-            AssertCaptured(shortcut, "X");
+            Check(!capture.Frame(2, "B C", "A B C", "", out _) && !capture.NeedsRetry,
+                "multiple later presses replace the old trigger with an unresolved group");
+            Check(!capture.Frame(3, "", "B C", "A", out _) && capture.NeedsRetry,
+                "releasing the earlier trigger cannot save its stale candidate");
+
+            capture.Begin(4);
+            capture.Frame(5, "A", "A", "", out _);
+            capture.Frame(6, "B C", "A B C", "", out _);
+            Check(!capture.Frame(7, "D E", "A B C D E", "", out _) && !capture.NeedsRetry &&
+                capture.DisplayText == "A + B + C + D + E + ...",
+                "further simultaneous presses extend the pending chord without inventing a trigger");
+            capture.Frame(8, "X", "A B C D E X", "", out _);
+            Check(capture.Frame(9, "", "A B C E X", "D", out object shortcut),
+                "any member release commits after a later sole press resolves the chord");
+            AssertCaptured(shortcut, "X", "A", "B", "C", "D", "E");
+        }
+
+        private static void CapturePendingCancellation()
+        {
+            foreach (bool cancelFirst in new[] { false, true })
+            {
+                var capture = new Capture();
+                string initial = capture.DisplayText;
+                capture.Frame(1, "LeftControl LeftShift", "LeftControl LeftShift", "", out _);
+                if (cancelFirst)
+                {
+                    capture.Cancel();
+                    Check(!capture.IsActive && capture.DisplayText == initial, "cancel clears the pending preview");
+                }
+                capture.Begin(2);
+                Check(capture.DisplayText == initial && !capture.NeedsRetry,
+                    "rearming clears pending state even without a separate cancel call");
+                Check(!capture.Frame(3, "", "", "LeftControl LeftShift", out _) && !capture.NeedsRetry,
+                    "old group releases cannot save or invalidate a rearmed capture");
+                capture.Frame(4, "C", "C", "", out _);
+                Check(capture.Frame(5, "", "", "C", out object shortcut), "a new capture is independent of the pending group");
+                AssertCaptured(shortcut, "C");
+                Check(capture.DisplayText == initial, "completion clears the resolved preview");
+            }
+        }
+
+        private static void CapturePendingFastTap()
+        {
+            var capture = new Capture();
+            capture.Frame(1, "LeftShift LeftControl", "LeftShift LeftControl", "", out _);
+            Check(capture.Frame(2, "X", "LeftShift LeftControl", "X", out object shortcut),
+                "a sole press and release within one frame resolves and commits the pending chord");
+            AssertCaptured(shortcut, "X", "LeftShift", "LeftControl");
         }
 
         private static void CaptureMixedTransitions()
@@ -258,6 +375,17 @@ namespace ConfigurationManager.Tests
             capture.Frame(4, "C", "C", "", out _);
             Check(capture.Frame(5, "", "", "C", out object shortcut), "the next clean attempt succeeds");
             AssertCaptured(shortcut, "C");
+
+            capture.Begin(6);
+            capture.Frame(7, "A B", "A B", "", out _);
+            Check(!capture.Frame(8, "C", "B C", "A", out _) && capture.NeedsRetry,
+                "a pending group cannot resolve when another key is released in the same frame");
+            foreach (string pressed in new[] { "A B", "B A" })
+            {
+                capture.Begin(9);
+                Check(!capture.Frame(10, pressed, "A", "B", out _) && capture.NeedsRetry,
+                    "multiple fresh keys with a release in the same frame retry regardless of enumeration order");
+            }
         }
 
         private static void CaptureSeparateTaps()
@@ -697,7 +825,12 @@ namespace ConfigurationManager.Tests
         {
             AssertShortcutLabel("X", new[] { "LeftAlt" }, "X + LeftAlt", "LeftAlt + X");
             AssertShortcutLabel("LeftAlt", new[] { "X" }, "LeftAlt + X", "X + LeftAlt");
-            AssertShortcutLabel("X", new[] { "LeftShift", "LeftAlt" }, null, "LeftShift + LeftAlt + X");
+            AssertShortcutLabel("X", new[] { "LeftShift", "LeftAlt" }, "X + LeftShift + LeftAlt", "LeftAlt + LeftShift + X");
+            AssertShortcutLabel("D", new[] { "LeftAlt", "S" }, "D + S + LeftAlt", "LeftAlt + S + D");
+            AssertShortcutLabel("LeftAlt", new[] { "LeftShift" }, "LeftAlt + LeftShift", "LeftShift + LeftAlt");
+            AssertShortcutLabel("LeftShift", new[] { "LeftAlt" }, "LeftShift + LeftAlt", "LeftAlt + LeftShift");
+            AssertShortcutLabel("X", new[] { "RightShift", "LeftAlt", "RightControl", "LeftShift", "RightAlt", "LeftControl", "S", "A" }, null,
+                "LeftControl + RightControl + LeftAlt + RightAlt + LeftShift + RightShift + A + S + X");
         }
 
         private static void EmptyAndSingleShortcuts()
